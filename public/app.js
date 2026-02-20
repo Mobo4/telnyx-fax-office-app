@@ -96,6 +96,7 @@ let state = {
   allContacts: [],
   tags: [],
   bulkJobs: [],
+  pendingResetAfterSendConfirm: false,
   appSettings: {
     outbound_copy_enabled: true,
     outbound_copy_email: "eyecarecenteroc@gmail.com",
@@ -565,6 +566,7 @@ function setAuthenticatedView(user) {
     toInput.value = "";
     state.recipients = [];
     state.recipientMeta = {};
+    state.pendingResetAfterSendConfirm = false;
     state.addressbookSelectedIds = [];
     recipientNameSearchInput.value = "";
     recipientSuggestions.innerHTML = "";
@@ -1193,10 +1195,10 @@ sendForm.addEventListener("submit", async (event) => {
         bulkMediaUrlInput.value = firstMediaUrl;
       }
     }
-    resetSendFormForNextFaxJob();
     await Promise.all([loadFaxes(), loadFrequentContacts()]);
     const historyIdSet = new Set(state.faxes.map((item) => item.id));
     const historyRecordedCount = faxIds.filter((id) => historyIdSet.has(id)).length;
+    state.pendingResetAfterSendConfirm = true;
     openSendConfirmationModal({
       queuedCount,
       failedCount,
@@ -1235,6 +1237,10 @@ sendConfirmCloseBtn.addEventListener("click", () => {
 });
 sendConfirmOkBtn.addEventListener("click", () => {
   closeSendConfirmationModal();
+  if (state.pendingResetAfterSendConfirm) {
+    resetSendFormForNextFaxJob();
+    state.pendingResetAfterSendConfirm = false;
+  }
 });
 addressbookApplyBtn.addEventListener("click", () => {
   applyAddressbookSelection();
