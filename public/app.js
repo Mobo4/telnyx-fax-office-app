@@ -418,6 +418,21 @@ function closeSendConfirmationModal() {
   sendConfirmModal.classList.add("hidden");
 }
 
+function resetSendFormForNextFaxJob() {
+  sendForm.reset();
+  state.recipients = [];
+  state.recipientMeta = {};
+  syncRecipientsInput();
+  renderRecipientChips();
+  recipientNameSearchInput.value = "";
+  recipientSuggestions.innerHTML = "";
+  recipientSuggestions.classList.add("hidden");
+  mediaUrlInput.value = "";
+  clearSelectedUploadFiles();
+  applyAppSettingsToSendForm();
+  toInput.focus();
+}
+
 function getContactByFaxNumber(number) {
   const normalized = normalizePhoneInput(number);
   return state.allContacts.find((contact) => normalizePhoneInput(contact.fax_number) === normalized) || null;
@@ -1178,7 +1193,7 @@ sendForm.addEventListener("submit", async (event) => {
         bulkMediaUrlInput.value = firstMediaUrl;
       }
     }
-    clearSelectedUploadFiles();
+    resetSendFormForNextFaxJob();
     await Promise.all([loadFaxes(), loadFrequentContacts()]);
     const historyIdSet = new Set(state.faxes.map((item) => item.id));
     const historyRecordedCount = faxIds.filter((id) => historyIdSet.has(id)).length;
