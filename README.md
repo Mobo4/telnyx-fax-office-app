@@ -54,6 +54,8 @@ Set:
 - `OUTBOUND_COPY_ENABLED` and `OUTBOUND_COPY_EMAIL`
 - `OFFICE_NAME`, `OFFICE_FAX_NUMBER`, `OFFICE_EMAIL`
 - SMTP variables (`SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`)
+- Optional: `DATA_DIR` (path for persistent JSON data)
+- Optional: `TELNYX_HTTP_TIMEOUT_MS` (default `5000`)
 
 ## 3. Run locally
 
@@ -145,6 +147,13 @@ This app also accepts:
 5. Add environment variables from `.env`.
 6. Use generated URL as Telnyx webhook:
    - `https://<service>.onrender.com/telnyx/webhook`
+7. For persistence (required for users/settings/history across restarts):
+   - attach a Render Disk
+   - mount path: `/var/data`
+   - set `DATA_DIR=/var/data/telnyx-fax-office-app` (or allow app default)
+8. For always-on inbound webhook reliability:
+   - use a non-sleeping Render plan, or
+   - configure external keepalive pings to `https://<service>.onrender.com/api/health`
 
 ## 9. Contacts, tags, and bulk fax
 

@@ -1,6 +1,7 @@
 node_modules
 .env
 data/faxes.json
+data/faxes_archive.json
 data/users.json
 data/config.json
 data/contacts.json

@@ -672,8 +672,11 @@ function setHistoryFilter(filter) {
 }
 
 async function loadFaxes() {
-  const body = await api("/api/faxes");
+  const body = await api("/api/faxes?limit=50");
   state.faxes = Array.isArray(body.items) ? body.items : [];
+  if (body.sync_warning) {
+    setMessage(sendMessage, `History sync warning: ${body.sync_warning}`);
+  }
   renderFaxTable();
 }
 
@@ -1014,7 +1017,7 @@ function renderUserRow(item) {
     <td>${escapeHtml(formatDate(item.created_at))}</td>
     <td>
       <form class="inline-reset-form" data-user="${escapeHtml(item.username)}">
-        <input type="password" name="password" placeholder="New password" required />
+        <input type="password" name="password" placeholder="New password" minlength="10" required />
         <button type="submit" class="small-btn secondary">Reset</button>
       </form>
     </td>
@@ -1055,21 +1058,39 @@ async function loadUsers() {
 }
 
 async function initAfterLogin() {
-  await Promise.all([
-    loadFaxes(),
-    loadContacts(),
-    loadAllContactsForPicker(),
-    loadContactTags(),
-    loadBulkJobs(),
-    loadAppSettings(),
-    loadFrequentContacts()
-  ]);
+  const baseLoaders = [
+    { label: "fax history", run: () => loadFaxes() },
+    { label: "contacts", run: () => loadContacts() },
+    { label: "address book", run: () => loadAllContactsForPicker() },
+    { label: "contact tags", run: () => loadContactTags() },
+    { label: "bulk jobs", run: () => loadBulkJobs() },
+    { label: "app settings", run: () => loadAppSettings() },
+    { label: "frequent contacts", run: () => loadFrequentContacts() }
+  ];
+  const baseResults = await Promise.allSettled(baseLoaders.map((item) => item.run()));
+  const baseFailed = baseResults
+    .map((result, index) =>
+      result.status === "rejected" ? `${baseLoaders[index].label}: ${result.reason?.message || "failed"}` : null
+    )
+    .filter(Boolean);
+  if (baseFailed.length) {
+    setMessage(sendMessage, `Loaded with warnings. ${baseFailed[0]}`);
+  }
+
   setLastUrlUI(state.user?.last_media_url || "");
   if (state.user?.role === "admin") {
-    try {
-      await Promise.all([loadAdminSettings(), loadUsers()]);
-    } catch (error) {
-      setMessage(settingsMessage, error.message);
+    const adminLoaders = [
+      { label: "admin settings", run: () => loadAdminSettings() },
+      { label: "users", run: () => loadUsers() }
+    ];
+    const adminResults = await Promise.allSettled(adminLoaders.map((item) => item.run()));
+    const adminFailed = adminResults
+      .map((result, index) =>
+        result.status === "rejected" ? `${adminLoaders[index].label}: ${result.reason?.message || "failed"}` : null
+      )
+      .filter(Boolean);
+    if (adminFailed.length) {
+      setMessage(settingsMessage, `Loaded with warnings. ${adminFailed[0]}`);
     }
   }
 }
@@ -1223,6 +1244,11 @@ refreshAllButton.addEventListener("click", async () => {
 historyTabSent.addEventListener("click", () => setHistoryFilter("sent"));
 historyTabReceived.addEventListener("click", () => setHistoryFilter("received"));
 settingsToggleBtn.addEventListener("click", () => {
+  if (state.user?.role !== "admin") {
+    state.adminSettingsOpen = false;
+    applyAdminPanelVisibility();
+    return;
+  }
   state.adminSettingsOpen = !state.adminSettingsOpen;
   applyAdminPanelVisibility();
 });
@@ -1503,6 +1529,7 @@ createUserForm.addEventListener("submit", async (event) => {
   const formData = new FormData(createUserForm);
 
   try {
+    const submittedUsername = (formData.get("username") || "").toString().trim().toLowerCase();
     await api("/api/admin/users", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1513,7 +1540,7 @@ createUserForm.addEventListener("submit", async (event) => {
       })
     });
     createUserForm.reset();
-    setMessage(usersMessage, "User created.");
+    setMessage(usersMessage, `User created. Login username: ${submittedUsername}`);
     await loadUsers();
   } catch (error) {
     setMessage(usersMessage, error.message);

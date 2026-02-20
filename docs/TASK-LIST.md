@@ -26,6 +26,11 @@
 - [x] Align backend batch upload limit to 5 files.
 - [x] Replace silent media URL filtering with explicit backend validation errors.
 - [x] Refresh PRD + knowledge documents with reliability specs and known gaps.
+- [x] Harden admin-only settings access path (UI + API enforcement check).
+- [x] Harden user store compatibility/migration for legacy schemas.
+- [x] Add Telnyx request timeout to prevent fax-history hangs.
+- [x] Merge active and archive stores for latest-50 history rendering.
+- [x] Add Render data-path diagnostics and persistent-disk warning logs.
 
 ## Next Tasks
 - [ ] Add automated tests for `/api/faxes` multi-recipient success/failure mixes.
@@ -33,3 +38,4 @@
 - [ ] Add localhost runtime banner explaining Telnyx public-HTTPS media requirement.
 - [ ] Add per-user timezone setting for cover page timestamps.
 - [ ] Add pagination for address book list when contact count approaches 3000.
+- [ ] Add Render deployment guide with exact persistent disk + no-sleep plan checklist screenshots.

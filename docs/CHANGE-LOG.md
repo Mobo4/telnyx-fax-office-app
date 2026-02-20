@@ -30,6 +30,13 @@
 - Replaced silent media URL filtering in `/api/faxes` with explicit invalid-URL errors.
 - Redesigned dashboard CSS with improved typography/colors/layout.
 - Updated README and PRD to reflect new workflow.
+- Added user-store normalization/migration guard so legacy user JSON layouts continue to work.
+- Added legacy password compatibility path (auto-upgrade to bcrypt hash on successful login).
+- Hardened admin settings access checks for non-admin sessions.
+- Added Telnyx fetch timeout (`TELNYX_HTTP_TIMEOUT_MS`, default 5000ms) to prevent `/api/faxes` hangs.
+- Updated `/api/faxes` to return local+archive merged history with non-blocking `sync_warning`.
+- Added Render runtime diagnostics in `/api/health` and startup warnings for non-persistent data dir.
+- Added Render startup warning about free-tier sleep impact on inbound webhook reliability.
 
 ### Files Changed
 - `/Users/alex/Documents/Projects/Telnyx/server.js`
@@ -43,6 +50,7 @@
 - `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST.md`
 - `/Users/alex/Documents/Projects/Telnyx/docs/CHANGE-LOG.md`
 - `/Users/alex/Documents/Projects/Telnyx/AGENTS.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST.md`
 
 ### Handoff Notes
 - Primary workflow now expects users to select files inline and click Send once.

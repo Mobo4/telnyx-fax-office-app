@@ -2,7 +2,8 @@
 
 ## Version
 - Date: 2026-02-20
-- Scope: Send reliability, confirmation UX, multi-file handling, login page polish, continuity docs.
+- Scope: Send reliability, confirmation UX, multi-file handling, login page polish, history retention, deployment guidance.
+- Scope: Send reliability, confirmation UX, multi-file handling, login page polish, history retention, auth hardening, deployment guidance.
 
 ## Product Goal
 Provide a secure browser-based fax system for Eyecare Care of Orange County with reliable outbound sending, clear confirmation feedback, and admin-controlled settings.
@@ -23,6 +24,8 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 4. As a user, I receive a clear popup confirmation when the fax API confirms queueing.
 5. As a user, I can verify confirmation info is visible in Sent History.
 6. As an admin, I can manage Telnyx and office defaults securely.
+7. As staff, I can rely on always-on inbound handling and have inbound email as backup.
+8. As admin, I can access recent history quickly while retaining older records.
 
 ## Functional Requirements
 
@@ -30,6 +33,8 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Login required before app usage.
 - Role support: `admin`, `user`.
 - Settings and user management visible only to admin.
+- Admin routes return `403` for non-admin users.
+- User storage must survive schema drift (array/map migration), with bcrypt-hash compatibility for old credentials.
 
 ### Send Fax Workflow
 - Recipient input accepts:
@@ -61,11 +66,16 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
   - fax IDs
   - count of records present in local Sent History table
 - Keep standard inline status message as secondary feedback.
+- On confirmation modal `OK`, reset compose form for next fax job.
 
 ### Fax History
 - Sent/Received tabs remain.
 - File links visible in each row.
 - Confirmation modal points users to Sent History entries.
+- Default history fetch returns latest 50 records for performance.
+- Older records are archived for retention and can be retrieved by admin.
+- History endpoint must not hang UI when Telnyx API is slow/unreachable.
+- On sync failure, history still loads from local/archived data with warning message.
 
 ### Contacts and Address Book
 - Contact CRUD + CSV import.
@@ -77,11 +87,20 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - `/api/faxes` validates media URLs as public `https://` links (no silent filtering).
 - Errors are explicit and user-readable.
 
+### Deployment and Availability
+- Production requires a public HTTPS host for webhook and document retrieval.
+- Supported now: Render Node service (current live baseline).
+- Optional migration path: Cloudflare (Workers/Containers) after compatibility testing.
+- Inbound flow must run on non-sleeping service tier to avoid missed/delayed webhook processing.
+- Telnyx inbound email recipient remains enabled as backup.
+- For Render persistence, data should be stored on mounted disk path (default `/var/data/telnyx-fax-office-app`).
+
 ## Non-Functional Requirements
 - Clear error messages for blocked send conditions.
 - No hidden upload popups before login.
 - Mobile-responsive basic layout.
 - Maintainable docs for AI/engineer handoff.
+- Telnyx request timeout applied to avoid indefinite request hangs (default 5s).
 
 ## Acceptance Criteria
 - Login card is centered and branded.
@@ -89,8 +108,14 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Attachments render in a list below file picker.
 - System blocks send if >5 files or size limits exceeded.
 - Send success opens confirmation modal and includes fax IDs.
+- Compose form resets only after confirmation modal OK click.
 - Sent History shows queued records after successful send.
+- Sent history shows latest 50 records by default.
+- Older records remain retained in archive store.
+- History still renders when Telnyx sync is down, with non-blocking warning.
+- Non-admin users cannot open/settings panel or call admin settings endpoints.
 - Server rejects non-HTTPS media URLs with explicit error.
+- PRD and knowledge docs include hosting decision and backup inbound path.
 
 ## Gaps Reviewed and Resolved
 - Gap: send failures were not obvious enough.
@@ -112,3 +137,5 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 ## Remaining Risks
 - Telnyx requires publicly reachable HTTPS documents; localhost-hosted files will not be reachable externally.
 - End-to-end send verification still depends on real Telnyx credentials/network and destination fax behavior.
+- Free/idle hosting plans can impact inbound webhook timing and reliability.
+- Render free sleep can still interrupt webhook availability unless plan/keepalive is configured.

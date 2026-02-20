@@ -14,7 +14,15 @@ const app = express();
 const port = process.env.PORT || 10000;
 
 const TELNYX_API_BASE = "https://api.telnyx.com/v2";
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
+const TELNYX_HTTP_TIMEOUT_MS = Math.max(2000, Number(process.env.TELNYX_HTTP_TIMEOUT_MS || 5000));
+const IS_RENDER_RUNTIME = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID);
+const RENDER_PERSISTENT_ROOT = "/var/data";
+const DEFAULT_RENDER_DATA_DIR = path.join(RENDER_PERSISTENT_ROOT, "telnyx-fax-office-app");
+const DATA_DIR =
+  process.env.DATA_DIR ||
+  (IS_RENDER_RUNTIME && fs.existsSync(RENDER_PERSISTENT_ROOT)
+    ? DEFAULT_RENDER_DATA_DIR
+    : path.join(__dirname, "data"));
 const STORE_FILE = path.join(DATA_DIR, "faxes.json");
 const FAX_ARCHIVE_FILE = path.join(DATA_DIR, "faxes_archive.json");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
@@ -70,7 +78,12 @@ function readJson(filePath, fallback) {
   if (!fs.existsSync(filePath)) {
     return fallback;
   }
-  return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (error) {
+    console.warn(`Invalid JSON in ${filePath}. Falling back to defaults.`);
+    return fallback;
+  }
 }
 
 function writeJson(filePath, value) {
@@ -261,6 +274,9 @@ function ensureDataFiles() {
         `Bootstrap admin created: username "${adminUsername}" password "${generatedPassword}". Set ADMIN_PASSWORD in .env.`
       );
     }
+  } else {
+    const normalizedUsers = ensureAdminAccount(readUsers());
+    writeUsers(normalizedUsers);
   }
 }
 
@@ -283,12 +299,64 @@ function writeArchiveStore(store) {
   });
 }
 
+function normalizeUsersStore(rawUsers) {
+  const rawItems = Array.isArray(rawUsers?.items)
+    ? rawUsers.items
+    : rawUsers?.items && typeof rawUsers.items === "object"
+      ? Object.values(rawUsers.items)
+      : [];
+
+  const items = rawItems
+    .filter(Boolean)
+    .map((item) => ({
+      ...item,
+      username: normalizeUsername(item.username),
+      role: item.role === "admin" ? "admin" : "user",
+      last_media_url: item.last_media_url || ""
+    }));
+
+  return {
+    updated_at: rawUsers?.updated_at || new Date().toISOString(),
+    items
+  };
+}
+
+function ensureAdminAccount(usersStore) {
+  const users = normalizeUsersStore(usersStore);
+  const hasAdmin = users.items.some((item) => item.role === "admin");
+  if (hasAdmin) {
+    return users;
+  }
+
+  const adminUsername = normalizeUsername(process.env.ADMIN_USERNAME || "admin");
+  const generatedPassword = crypto.randomBytes(9).toString("base64url");
+  const adminPassword = process.env.ADMIN_PASSWORD || generatedPassword;
+  const now = new Date().toISOString();
+  users.items.push({
+    id: crypto.randomUUID(),
+    username: adminUsername,
+    role: "admin",
+    password_hash: bcrypt.hashSync(adminPassword, 12),
+    last_media_url: "",
+    created_at: now,
+    updated_at: now
+  });
+  users.updated_at = now;
+
+  if (!process.env.ADMIN_PASSWORD) {
+    console.warn(
+      `No admin account found. Created bootstrap admin "${adminUsername}" with generated password "${generatedPassword}".`
+    );
+  }
+  return users;
+}
+
 function readUsers() {
-  return readJson(USERS_FILE, { updated_at: new Date().toISOString(), items: [] });
+  return normalizeUsersStore(readJson(USERS_FILE, { updated_at: new Date().toISOString(), items: [] }));
 }
 
 function writeUsers(users) {
-  writeJson(USERS_FILE, users);
+  writeJson(USERS_FILE, normalizeUsersStore(users));
 }
 
 function readConfig() {
@@ -417,6 +485,17 @@ function sanitizeUser(user) {
 function getUserByUsername(username) {
   const users = readUsers();
   return users.items.find((item) => item.username === normalizeUsername(username)) || null;
+}
+
+function verifyUserPassword(user, password) {
+  if (!user) return false;
+  if (user.password_hash) {
+    return bcrypt.compareSync(password, user.password_hash);
+  }
+  if (typeof user.password === "string") {
+    return password === user.password;
+  }
+  return false;
 }
 
 function listUsersSafe() {
@@ -1019,11 +1098,27 @@ async function telnyxRequest({ apiKey, method, resourcePath, body, isForm = fals
     headers["Content-Type"] = "application/x-www-form-urlencoded";
   }
 
-  const response = await fetch(`${TELNYX_API_BASE}${resourcePath}`, {
-    method,
-    headers,
-    body: body ? (isForm ? body : JSON.stringify(body)) : undefined
-  });
+  const abortController = new AbortController();
+  const timeoutHandle = setTimeout(() => {
+    abortController.abort();
+  }, TELNYX_HTTP_TIMEOUT_MS);
+
+  let response;
+  try {
+    response = await fetch(`${TELNYX_API_BASE}${resourcePath}`, {
+      method,
+      headers,
+      body: body ? (isForm ? body : JSON.stringify(body)) : undefined,
+      signal: abortController.signal
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`Telnyx request timed out after ${TELNYX_HTTP_TIMEOUT_MS}ms.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
 
   const json = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -1316,8 +1411,16 @@ app.post("/api/auth/login", (req, res) => {
   const password = req.body.password || "";
   const user = getUserByUsername(username);
 
-  if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+  if (!user || !verifyUserPassword(user, password)) {
     return res.status(401).json({ error: "Invalid username or password." });
+  }
+
+  if (!user.password_hash && typeof user.password === "string") {
+    try {
+      updateUserPassword({ username: user.username, password });
+    } catch (error) {
+      // keep login successful even if migration write fails
+    }
   }
 
   req.session.user = sanitizeUser(user);
@@ -1373,6 +1476,7 @@ app.post("/api/auth/change-password", (req, res) => {
 
 app.get("/api/health", (req, res) => {
   const cfg = getRuntimeConfig();
+  const isPersistentDataPath = DATA_DIR.startsWith(`${RENDER_PERSISTENT_ROOT}/`);
   res.json({
     ok: true,
     app: "telnyx-fax-office-app",
@@ -1380,7 +1484,12 @@ app.get("/api/health", (req, res) => {
     has_api_key: Boolean(cfg.telnyx_api_key),
     has_connection_id: Boolean(cfg.telnyx_connection_id),
     has_from_number: Boolean(cfg.telnyx_from_number),
-    has_fax_application_id: Boolean(cfg.telnyx_fax_application_id)
+    has_fax_application_id: Boolean(cfg.telnyx_fax_application_id),
+    hosting: {
+      is_render: IS_RENDER_RUNTIME,
+      data_dir: DATA_DIR,
+      persistent_data_path: isPersistentDataPath
+    }
   });
 });
 
@@ -1397,6 +1506,7 @@ app.get("/api/settings", (req, res) => {
 
 app.get("/api/faxes", async (req, res) => {
   const limit = Math.max(1, Math.min(Number(req.query.limit || FAX_HISTORY_VISIBLE_LIMIT), 100));
+  let syncWarning = "";
   try {
     const cfg = getRuntimeConfig();
     if (cfg.telnyx_api_key) {
@@ -1422,11 +1532,27 @@ app.get("/api/faxes", async (req, res) => {
     }
   } catch (error) {
     // Non-blocking: return local store if Telnyx sync fails.
+    syncWarning = error?.message || "Telnyx history sync failed.";
   }
 
   const store = readStore();
-  const items = sortFaxItemsDesc(Object.values(store.items || {})).slice(0, limit);
-  res.json({ items, updated_at: store.updated_at, limit });
+  const archive = readArchiveStore();
+  const merged = sortFaxItemsDesc([
+    ...Object.values(store.items || {}),
+    ...Object.values(archive.items || {})
+  ]);
+  const deduped = [];
+  const seenIds = new Set();
+  merged.forEach((item) => {
+    const id = item?.id || crypto.randomUUID();
+    if (seenIds.has(id)) {
+      return;
+    }
+    seenIds.add(id);
+    deduped.push(item);
+  });
+  const items = deduped.slice(0, limit);
+  res.json({ items, updated_at: store.updated_at, limit, sync_warning: syncWarning });
 });
 
 app.get("/api/faxes/archive", requireAdmin, (req, res) => {
@@ -2089,4 +2215,15 @@ app.get("*", (req, res) => {
 ensureDataFiles();
 app.listen(port, () => {
   console.log(`Fax app running on port ${port}`);
+  console.log(`Using data directory: ${DATA_DIR}`);
+  if (IS_RENDER_RUNTIME && !DATA_DIR.startsWith(`${RENDER_PERSISTENT_ROOT}/`)) {
+    console.warn(
+      "Render persistent disk is not configured for DATA_DIR. Users/settings/history will reset after restart/deploy."
+    );
+  }
+  if (IS_RENDER_RUNTIME) {
+    console.warn(
+      "Render free instances can sleep when idle. For always-on inbound fax webhooks, use a non-sleeping plan or external uptime pings."
+    );
+  }
 });
