@@ -1,0 +1,8 @@
+node_modules
+.env
+data/faxes.json
+data/users.json
+data/config.json
+data/contacts.json
+data/bulk_jobs.json
+public/uploads/*

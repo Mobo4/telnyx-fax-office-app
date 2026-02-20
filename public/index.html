@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Office Fax App</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=Source+Sans+3:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Office Fax App</h1>
+      <p class="sub">Secure browser app for sending faxes and verifying delivery.</p>
+
+      <section id="login-panel" class="card login-card">
+        <div class="login-brand">
+          <div class="fax-logo" aria-hidden="true">
+            <svg viewBox="0 0 64 64" role="img">
+              <rect x="12" y="8" width="40" height="16" rx="3" fill="#d7e6fb"></rect>
+              <rect x="8" y="24" width="48" height="28" rx="6" fill="#0b6cff"></rect>
+              <rect x="16" y="31" width="32" height="14" rx="2" fill="#ffffff"></rect>
+              <circle cx="20" cy="52" r="3" fill="#e6f0ff"></circle>
+              <circle cx="28" cy="52" r="3" fill="#e6f0ff"></circle>
+              <rect x="36" y="50" width="12" height="4" rx="2" fill="#e6f0ff"></rect>
+            </svg>
+          </div>
+          <div>
+            <p class="login-brand-kicker">Secure Fax Workspace</p>
+            <h2>Login</h2>
+          </div>
+        </div>
+        <form id="login-form">
+          <label for="username">Username</label>
+          <input id="username" name="username" autocomplete="username" required />
+
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required />
+
+          <button type="submit">Sign In</button>
+        </form>
+        <p id="login-message" class="message"></p>
+      </section>
+
+      <section id="app-shell" class="hidden">
+        <section class="card">
+          <div class="card-header">
+            <h2>Session</h2>
+            <div class="row-actions">
+              <button id="logout-btn" type="button" class="secondary">Logout</button>
+            </div>
+          </div>
+          <p id="session-label" class="session-label"></p>
+        </section>
+
+        <section class="card">
+          <h2>Send Fax</h2>
+          <div class="office-profile">
+            <p class="helper-text">Office profile (used for cover page defaults)</p>
+            <p id="office_name_display" class="office-line"><strong>Eyecare Care of Orange County</strong></p>
+            <p id="office_fax_display" class="office-line">Fax: +17145580642</p>
+            <p id="office_email_display" class="office-line">Email: eyecarecenteroc@gmail.com</p>
+          </div>
+          <form id="send-form">
+            <label for="recipient_name_search">Find Contact By Name</label>
+            <div class="autocomplete-wrap">
+              <input
+                id="recipient_name_search"
+                placeholder="Type a contact name and pick from results..."
+                autocomplete="off"
+              />
+              <div id="recipient-suggestions" class="suggestions hidden"></div>
+            </div>
+
+            <label for="to">To Fax Number(s)</label>
+            <div class="recipient-row">
+              <textarea
+                id="to"
+                name="to"
+                rows="2"
+                placeholder="7145580642, 7145559876"
+              ></textarea>
+              <div class="recipient-actions">
+                <button type="button" id="addressbook-toggle-btn" class="secondary">Address Book</button>
+                <button id="send-fax-primary-btn" type="submit">Send Fax</button>
+              </div>
+            </div>
+            <p class="helper-text">Use 10-digit US numbers or E.164. Separate multiple recipients with comma/new line.</p>
+
+            <div id="recipient-chips" class="chips-row"></div>
+
+            <input id="media_url" name="media_url" type="hidden" value="" />
+            <span id="last-url-label" class="helper-text hidden"></span>
+
+            <label for="send_file_input">Attach PDF/TIFF File(s)</label>
+            <input
+              id="send_file_input"
+              type="file"
+              accept=".pdf,.tif,.tiff,application/pdf,image/tiff"
+              multiple
+            />
+            <p class="helper-text">Attach up to 5 PDF/TIFF files. Files upload when you click Send Fax.</p>
+            <div id="selected-files-list" class="file-list"></div>
+            <p id="file-selection-message" class="helper-text"></p>
+
+            <fieldset class="cover-fieldset">
+              <legend>Cover Page</legend>
+              <label class="inline-checkbox">
+                <input id="include_cover_page" name="include_cover_page" type="checkbox" checked />
+                Add HIPAA cover page (default ON)
+              </label>
+
+              <label for="cover_subject">Cover Subject</label>
+              <input id="cover_subject" name="cover_subject" placeholder="Fax Transmission" />
+
+              <label for="cover_message">Cover Message</label>
+              <textarea
+                id="cover_message"
+                name="cover_message"
+                rows="4"
+                placeholder="Please see attached fax documents."
+              ></textarea>
+            </fieldset>
+
+            <label class="inline-checkbox">
+              <input id="send_copy_email" name="send_copy_email" type="checkbox" checked />
+              <span id="send-copy-label">Email us a copy</span>
+            </label>
+
+          </form>
+          <p id="send-message" class="message"></p>
+        </section>
+
+        <section class="card">
+          <div class="card-header">
+            <h2>Fax History</h2>
+            <div class="row-actions">
+              <div class="tab-row" role="tablist" aria-label="Fax history filter">
+                <button id="history-tab-sent" type="button" class="secondary active" data-filter="sent">
+                  Sent History
+                </button>
+                <button id="history-tab-received" type="button" class="secondary" data-filter="received">
+                  Received History
+                </button>
+              </div>
+              <button id="refresh-all" type="button" class="secondary">Refresh List</button>
+            </div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Fax ID</th>
+                <th>Direction</th>
+                <th>From</th>
+                <th>To</th>
+                <th>Files</th>
+                <th>Status</th>
+                <th>Updated</th>
+                <th>Reason</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="fax-table-body"></tbody>
+          </table>
+        </section>
+
+        <section id="admin-panel" class="hidden">
+          <section class="card">
+            <h2>Admin Settings</h2>
+            <form id="settings-form">
+              <label for="setting_connection_id">Telnyx Connection ID</label>
+              <input id="setting_connection_id" name="telnyx_connection_id" />
+
+              <label for="setting_from_number">Telnyx From Number (E.164)</label>
+              <input id="setting_from_number" name="telnyx_from_number" placeholder="+17148807060" />
+
+              <label for="setting_fax_app_id">Telnyx Fax Application ID</label>
+              <input id="setting_fax_app_id" name="telnyx_fax_application_id" />
+
+              <label class="inline-checkbox">
+                <input id="setting_outbound_copy_enabled" name="outbound_copy_enabled" type="checkbox" checked />
+                Send outbound fax copy email (default ON)
+              </label>
+
+              <label for="setting_outbound_copy_email">Outbound Copy Email</label>
+              <input
+                id="setting_outbound_copy_email"
+                name="outbound_copy_email"
+                type="email"
+                placeholder="eyecarecenteroc@gmail.com"
+              />
+
+              <label for="setting_office_name">Office Name</label>
+              <input
+                id="setting_office_name"
+                name="office_name"
+                placeholder="Eyecare Care of Orange County"
+              />
+
+              <label for="setting_office_fax_number">Office Fax Number (E.164)</label>
+              <input
+                id="setting_office_fax_number"
+                name="office_fax_number"
+                placeholder="+17145580642"
+              />
+
+              <label for="setting_office_email">Office Email</label>
+              <input
+                id="setting_office_email"
+                name="office_email"
+                type="email"
+                placeholder="eyecarecenteroc@gmail.com"
+              />
+
+              <label for="setting_api_key">Telnyx API Key (leave blank to keep current)</label>
+              <input id="setting_api_key" name="telnyx_api_key" type="password" />
+
+              <button type="submit">Save Settings</button>
+            </form>
+            <p id="settings-message" class="message"></p>
+          </section>
+
+          <section class="card">
+            <h2>Fax App Controls (Telnyx)</h2>
+            <form id="fax-app-form">
+              <label for="fax_email_recipient">Inbound Fax Email Recipient</label>
+              <input id="fax_email_recipient" name="fax_email_recipient" placeholder="fax@company.com" />
+
+              <label for="inbound_channel_limit">Inbound Channel Limit</label>
+              <input id="inbound_channel_limit" name="inbound_channel_limit" type="number" min="1" />
+
+              <label for="outbound_channel_limit">Outbound Channel Limit</label>
+              <input id="outbound_channel_limit" name="outbound_channel_limit" type="number" min="1" />
+
+              <button type="button" id="load-fax-app" class="secondary">Load Current</button>
+              <button type="submit">Update Telnyx Fax App</button>
+            </form>
+            <p id="fax-app-message" class="message"></p>
+          </section>
+
+          <section class="card">
+            <h2>User Management</h2>
+            <form id="create-user-form">
+              <label for="new_username">New Username</label>
+              <input id="new_username" name="username" required />
+
+              <label for="new_password">Temporary Password</label>
+              <input id="new_password" name="password" type="password" required />
+
+              <label for="new_role">Role</label>
+              <select id="new_role" name="role">
+                <option value="user">user</option>
+                <option value="admin">admin</option>
+              </select>
+
+              <button type="submit">Create User</button>
+            </form>
+            <p id="users-message" class="message"></p>
+            <table>
+              <thead>
+                <tr>
+                  <th>Username</th>
+                  <th>Role</th>
+                  <th>Created</th>
+                  <th>Reset Password</th>
+                </tr>
+              </thead>
+              <tbody id="users-table-body"></tbody>
+            </table>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <button id="settings-toggle-btn" type="button" class="floating-settings hidden">⚙ Settings</button>
+
+    <div id="addressbook-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="addressbook-title">
+      <div class="modal-card">
+        <div class="card-header">
+          <h2 id="addressbook-title">Address Book</h2>
+          <button type="button" id="addressbook-close-btn" class="secondary">Close</button>
+        </div>
+
+        <label for="addressbook-search">Search Contacts</label>
+        <input id="addressbook-search" placeholder="Search by name, fax, tag, or email..." />
+
+        <div class="subtle-card top5-block">
+          <h3>Top 5 Most Used</h3>
+          <div id="frequent-contacts" class="chips-row"></div>
+        </div>
+
+        <div class="tab-row modal-tabs" role="tablist" aria-label="Address book tabs">
+          <button id="addressbook-tab-contacts" type="button" class="secondary active">Contacts</button>
+          <button id="addressbook-tab-bulk" type="button" class="secondary">Bulk Fax</button>
+        </div>
+
+        <div id="addressbook-contacts-tab" class="modal-tab-panel">
+          <div id="addressbook-list" class="picker-list"></div>
+
+          <div class="row-actions modal-actions">
+            <button type="button" id="addressbook-apply-btn">OK - Add Selected Contacts</button>
+          </div>
+
+          <div class="modal-grid">
+            <section class="subtle-card modal-section">
+              <h3>Create Contact</h3>
+              <form id="contact-form">
+                <label for="contact_name">Name</label>
+                <input id="contact_name" name="name" placeholder="Dr Office Front Desk" required />
+
+                <label for="contact_fax">Fax Number (E.164)</label>
+                <input id="contact_fax" name="fax_number" placeholder="+17145551234" required />
+
+                <label for="contact_tags">Tags (comma separated)</label>
+                <input id="contact_tags" name="tags" placeholder="billing, referral, urgent" />
+
+                <label for="contact_email">Email (optional)</label>
+                <input id="contact_email" name="email" placeholder="frontdesk@example.com" />
+
+                <label for="contact_notes">Notes (optional)</label>
+                <input id="contact_notes" name="notes" placeholder="Any notes" />
+
+                <button type="submit">Add Contact</button>
+              </form>
+              <p id="contact-message" class="message"></p>
+
+              <form id="contact-import-form" class="import-form">
+                <label for="contact_import_file">Import Contacts CSV</label>
+                <input id="contact_import_file" name="file" type="file" accept=".csv,text/csv" required />
+                <div class="row-actions">
+                  <button type="submit" class="secondary">Import CSV</button>
+                  <a href="/contact-import-template.csv" target="_blank" rel="noreferrer">Download CSV template</a>
+                </div>
+              </form>
+              <p id="contact-import-message" class="message"></p>
+            </section>
+
+            <section class="subtle-card modal-section">
+              <h3>Manage Contacts</h3>
+              <div class="row-actions">
+                <input id="contact-search" placeholder="Search contacts..." />
+                <select id="contact-tag-filter">
+                  <option value="">All tags</option>
+                </select>
+                <button id="contact-refresh-btn" type="button" class="secondary">Refresh</button>
+              </div>
+
+              <table>
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Fax</th>
+                    <th>Tags</th>
+                    <th>Email</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="contacts-table-body"></tbody>
+              </table>
+            </section>
+          </div>
+        </div>
+
+        <div id="addressbook-bulk-tab" class="modal-tab-panel hidden">
+          <section class="subtle-card modal-section">
+            <h3>Bulk Fax By Tags</h3>
+            <label for="bulk_media_url">Media URL (public PDF/TIFF URL)</label>
+            <input id="bulk_media_url" placeholder="https://example.com/test-fax.pdf" />
+
+            <div class="row-actions">
+              <label for="bulk_tag_mode">Tag match mode</label>
+              <select id="bulk_tag_mode">
+                <option value="any">Any selected tag</option>
+                <option value="all">All selected tags</option>
+              </select>
+              <label class="inline-checkbox">
+                <input id="bulk_send_all" type="checkbox" />
+                Send to all contacts
+              </label>
+            </div>
+
+            <div id="bulk-tags-list" class="tag-grid"></div>
+
+            <div class="row-actions">
+              <button id="bulk-send-btn" type="button">Queue Bulk Fax</button>
+              <button id="bulk-refresh-btn" type="button" class="secondary">Refresh Jobs</button>
+            </div>
+            <p id="bulk-message" class="message"></p>
+
+            <table>
+              <thead>
+                <tr>
+                  <th>Job ID</th>
+                  <th>Status</th>
+                  <th>Total</th>
+                  <th>Queued</th>
+                  <th>Failed</th>
+                  <th>Updated</th>
+                </tr>
+              </thead>
+              <tbody id="bulk-jobs-body"></tbody>
+            </table>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <div id="send-confirm-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="send-confirm-title">
+      <div class="modal-card confirm-modal-card">
+        <div class="card-header">
+          <h2 id="send-confirm-title">Fax Queue Confirmation</h2>
+          <button type="button" id="send-confirm-close-btn" class="secondary">Close</button>
+        </div>
+        <p id="send-confirm-text"></p>
+        <ul id="send-confirm-details" class="confirm-list"></ul>
+        <div class="row-actions modal-actions">
+          <button type="button" id="send-confirm-ok-btn">OK</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
