@@ -16,6 +16,7 @@ const port = process.env.PORT || 10000;
 const TELNYX_API_BASE = "https://api.telnyx.com/v2";
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const STORE_FILE = path.join(DATA_DIR, "faxes.json");
+const FAX_ARCHIVE_FILE = path.join(DATA_DIR, "faxes_archive.json");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const CONFIG_FILE = path.join(DATA_DIR, "config.json");
 const CONTACTS_FILE = path.join(DATA_DIR, "contacts.json");
@@ -24,6 +25,7 @@ const UPLOADS_DIR = path.join(__dirname, "public", "uploads");
 const MAX_CONTACTS = 3000;
 const MAX_SEND_RECIPIENTS = 100;
 const MAX_UPLOAD_BATCH_FILES = 5;
+const FAX_HISTORY_VISIBLE_LIMIT = 50;
 
 let isBulkProcessorRunning = false;
 
@@ -203,6 +205,9 @@ function ensureDataFiles() {
   if (!fs.existsSync(STORE_FILE)) {
     writeJson(STORE_FILE, { updated_at: new Date().toISOString(), items: {} });
   }
+  if (!fs.existsSync(FAX_ARCHIVE_FILE)) {
+    writeJson(FAX_ARCHIVE_FILE, { updated_at: new Date().toISOString(), items: {} });
+  }
 
   if (!fs.existsSync(CONFIG_FILE)) {
     writeJson(CONFIG_FILE, {
@@ -265,6 +270,17 @@ function readStore() {
 
 function writeStore(store) {
   writeJson(STORE_FILE, store);
+}
+
+function readArchiveStore() {
+  return readJson(FAX_ARCHIVE_FILE, { updated_at: new Date().toISOString(), items: {} });
+}
+
+function writeArchiveStore(store) {
+  writeJson(FAX_ARCHIVE_FILE, {
+    ...store,
+    updated_at: new Date().toISOString()
+  });
 }
 
 function readUsers() {
@@ -901,6 +917,49 @@ function appendEvent(faxId, eventType, payload) {
   writeStore(store);
 }
 
+function sortFaxItemsDesc(items) {
+  return [...(items || [])].sort((a, b) => {
+    const aTs = new Date(a?.telnyx_updated_at || a?.updated_at || a?.created_at || 0).getTime();
+    const bTs = new Date(b?.telnyx_updated_at || b?.updated_at || b?.created_at || 0).getTime();
+    return bTs - aTs;
+  });
+}
+
+function rotateFaxStoreToVisibleLimit(limit = FAX_HISTORY_VISIBLE_LIMIT) {
+  const maxVisible = Math.max(1, Number(limit) || FAX_HISTORY_VISIBLE_LIMIT);
+  const store = readStore();
+  const sorted = sortFaxItemsDesc(Object.values(store.items || {}));
+  if (sorted.length <= maxVisible) {
+    return;
+  }
+
+  const keep = sorted.slice(0, maxVisible);
+  const overflow = sorted.slice(maxVisible);
+  const archive = readArchiveStore();
+
+  overflow.forEach((item) => {
+    if (!item?.id) return;
+    archive.items[item.id] = {
+      ...(archive.items[item.id] || {}),
+      ...item,
+      archived_at: new Date().toISOString()
+    };
+  });
+
+  const keepIds = new Set(keep.map((item) => item.id));
+  const nextItems = {};
+  Object.entries(store.items || {}).forEach(([id, item]) => {
+    if (keepIds.has(id)) {
+      nextItems[id] = item;
+    }
+  });
+  store.items = nextItems;
+  store.updated_at = new Date().toISOString();
+
+  writeStore(store);
+  writeArchiveStore(archive);
+}
+
 function parseWebhook(reqBody) {
   const eventType = reqBody?.data?.event_type || reqBody?.event_type || reqBody?.type || "unknown";
   const payload = reqBody?.data?.payload || reqBody?.payload || reqBody?.data || reqBody || {};
@@ -998,6 +1057,15 @@ async function telnyxGetFax({ apiKey, faxId }) {
     apiKey,
     method: "GET",
     resourcePath: `/faxes/${faxId}`
+  });
+}
+
+async function telnyxListFaxes({ apiKey, pageSize = FAX_HISTORY_VISIBLE_LIMIT }) {
+  const size = Math.max(1, Math.min(Number(pageSize) || FAX_HISTORY_VISIBLE_LIMIT, 100));
+  return telnyxRequest({
+    apiKey,
+    method: "GET",
+    resourcePath: `/faxes?page[size]=${size}`
   });
 }
 
@@ -1327,12 +1395,45 @@ app.get("/api/settings", (req, res) => {
   });
 });
 
-app.get("/api/faxes", (req, res) => {
+app.get("/api/faxes", async (req, res) => {
+  const limit = Math.max(1, Math.min(Number(req.query.limit || FAX_HISTORY_VISIBLE_LIMIT), 100));
+  try {
+    const cfg = getRuntimeConfig();
+    if (cfg.telnyx_api_key) {
+      const remote = await telnyxListFaxes({ apiKey: cfg.telnyx_api_key, pageSize: limit });
+      const remoteItems = Array.isArray(remote) ? remote : [];
+      remoteItems.forEach((fax) => {
+        if (!fax?.id) return;
+        upsertFax(fax.id, {
+          id: fax.id,
+          direction: fax.direction,
+          status: fax.status,
+          from: fax.from,
+          to: fax.to,
+          media_url: Array.isArray(fax.media_url) ? fax.media_url.join("\n") : fax.media_url,
+          media_urls: Array.isArray(fax.media_url) ? fax.media_url : parseMediaUrlsInput(fax.media_url || ""),
+          failure_reason: fax.failure_reason || null,
+          telnyx_updated_at: fax.updated_at,
+          page_count: fax.page_count || null,
+          created_at: fax.created_at
+        });
+      });
+      rotateFaxStoreToVisibleLimit(FAX_HISTORY_VISIBLE_LIMIT);
+    }
+  } catch (error) {
+    // Non-blocking: return local store if Telnyx sync fails.
+  }
+
   const store = readStore();
-  const items = Object.values(store.items).sort((a, b) => {
-    return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
-  });
-  res.json({ items, updated_at: store.updated_at });
+  const items = sortFaxItemsDesc(Object.values(store.items || {})).slice(0, limit);
+  res.json({ items, updated_at: store.updated_at, limit });
+});
+
+app.get("/api/faxes/archive", requireAdmin, (req, res) => {
+  const limit = Math.max(1, Math.min(Number(req.query.limit || 500), 2000));
+  const archive = readArchiveStore();
+  const items = sortFaxItemsDesc(Object.values(archive.items || {})).slice(0, limit);
+  return res.json({ items, updated_at: archive.updated_at, limit });
 });
 
 app.post("/api/faxes", async (req, res) => {
