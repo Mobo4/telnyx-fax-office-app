@@ -35,6 +35,7 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Settings and user management visible only to admin.
 - Admin routes return `403` for non-admin users.
 - User storage must survive schema drift (array/map migration), with bcrypt-hash compatibility for old credentials.
+- Optional Cloudflare D1 persistence for user accounts when running on ephemeral hosts.
 
 ### Send Fax Workflow
 - Recipient input accepts:
@@ -94,6 +95,7 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Inbound flow must run on non-sleeping service tier to avoid missed/delayed webhook processing.
 - Telnyx inbound email recipient remains enabled as backup.
 - For Render persistence, data should be stored on mounted disk path (default `/var/data/telnyx-fax-office-app`).
+- Alternative persistence path: Cloudflare D1 for user accounts on free/ephemeral hosts.
 
 ## Non-Functional Requirements
 - Clear error messages for blocked send conditions.

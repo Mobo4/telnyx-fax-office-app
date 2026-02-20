@@ -34,6 +34,15 @@ const MAX_CONTACTS = 3000;
 const MAX_SEND_RECIPIENTS = 100;
 const MAX_UPLOAD_BATCH_FILES = 5;
 const FAX_HISTORY_VISIBLE_LIMIT = 50;
+const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
+const D1_ACCOUNT_ID = (process.env.CLOUDFLARE_ACCOUNT_ID || "").trim();
+const D1_DATABASE_ID = (process.env.CLOUDFLARE_D1_DATABASE_ID || "").trim();
+const D1_API_TOKEN = (process.env.CLOUDFLARE_API_TOKEN || "").trim();
+const D1_API_KEY = (process.env.CLOUDFLARE_API_KEY || "").trim();
+const D1_EMAIL = (process.env.CLOUDFLARE_EMAIL || "").trim();
+const D1_USERS_ENABLED = Boolean(
+  D1_ACCOUNT_ID && D1_DATABASE_ID && (D1_API_TOKEN || (D1_API_KEY && D1_EMAIL))
+);
 
 let isBulkProcessorRunning = false;
 
@@ -574,6 +583,251 @@ function updateUserLastMediaUrl({ username, mediaUrl }) {
   users.updated_at = new Date().toISOString();
   writeUsers(users);
   return sanitizeUser(users.items[index]);
+}
+
+function d1AuthHeaders() {
+  if (D1_API_TOKEN) {
+    return {
+      Authorization: `Bearer ${D1_API_TOKEN}`,
+      "Content-Type": "application/json"
+    };
+  }
+  if (D1_API_KEY && D1_EMAIL) {
+    return {
+      "X-Auth-Key": D1_API_KEY,
+      "X-Auth-Email": D1_EMAIL,
+      "Content-Type": "application/json"
+    };
+  }
+  throw new Error("Cloudflare D1 auth not configured.");
+}
+
+async function d1Query(sql, params = []) {
+  if (!D1_USERS_ENABLED) {
+    throw new Error("Cloudflare D1 is not enabled.");
+  }
+  const response = await fetch(
+    `${CLOUDFLARE_API_BASE}/accounts/${D1_ACCOUNT_ID}/d1/database/${D1_DATABASE_ID}/query`,
+    {
+      method: "POST",
+      headers: d1AuthHeaders(),
+      body: JSON.stringify({ sql, params })
+    }
+  );
+
+  const json = await response.json().catch(() => ({}));
+  if (!response.ok || !json?.success) {
+    const detail = json?.errors?.[0]?.message || "Cloudflare D1 query failed.";
+    throw new Error(detail);
+  }
+  const result = Array.isArray(json.result) ? json.result[0] : null;
+  if (result && result.success === false) {
+    throw new Error("Cloudflare D1 statement failed.");
+  }
+  return Array.isArray(result?.results) ? result.results : [];
+}
+
+function d1NormalizeUserRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    username: normalizeUsername(row.username),
+    role: row.role === "admin" ? "admin" : "user",
+    password_hash: row.password_hash || "",
+    last_media_url: row.last_media_url || "",
+    created_at: row.created_at,
+    updated_at: row.updated_at
+  };
+}
+
+async function ensureD1UsersTable() {
+  if (!D1_USERS_ENABLED) return;
+  await d1Query(`CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    role TEXT NOT NULL,
+    password_hash TEXT,
+    last_media_url TEXT,
+    created_at TEXT,
+    updated_at TEXT
+  )`);
+}
+
+async function getUserByUsernameStore(username) {
+  if (!D1_USERS_ENABLED) {
+    return getUserByUsername(username);
+  }
+  const rows = await d1Query("SELECT * FROM users WHERE username = ? LIMIT 1", [
+    normalizeUsername(username)
+  ]);
+  return d1NormalizeUserRow(rows[0] || null);
+}
+
+async function listUsersSafeStore() {
+  if (!D1_USERS_ENABLED) {
+    return listUsersSafe();
+  }
+  const rows = await d1Query(
+    "SELECT id, username, role, last_media_url, created_at, updated_at FROM users ORDER BY created_at DESC"
+  );
+  return rows.map((row) => sanitizeUser(d1NormalizeUserRow(row)));
+}
+
+async function createUserStore({ username, password, role }) {
+  if (!D1_USERS_ENABLED) {
+    return createUser({ username, password, role });
+  }
+  const normalizedUsername = normalizeUsername(username);
+  if (!/^[a-z0-9._-]{3,64}$/.test(normalizedUsername)) {
+    throw new Error("Username must be 3-64 chars and use letters, numbers, dot, underscore, or dash.");
+  }
+  if (!password || password.length < 10) {
+    throw new Error("Password must be at least 10 characters.");
+  }
+  if (!["admin", "user"].includes(role)) {
+    throw new Error("Role must be admin or user.");
+  }
+
+  const existing = await d1Query("SELECT id FROM users WHERE username = ? LIMIT 1", [normalizedUsername]);
+  if (existing.length) {
+    throw new Error("Username already exists.");
+  }
+
+  const now = new Date().toISOString();
+  const user = {
+    id: crypto.randomUUID(),
+    username: normalizedUsername,
+    role,
+    password_hash: bcrypt.hashSync(password, 12),
+    last_media_url: "",
+    created_at: now,
+    updated_at: now
+  };
+
+  await d1Query(
+    "INSERT INTO users (id, username, role, password_hash, last_media_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    [user.id, user.username, user.role, user.password_hash, user.last_media_url, user.created_at, user.updated_at]
+  );
+  return sanitizeUser(user);
+}
+
+async function updateUserPasswordStore({ username, password }) {
+  if (!D1_USERS_ENABLED) {
+    return updateUserPassword({ username, password });
+  }
+  if (!password || password.length < 10) {
+    throw new Error("Password must be at least 10 characters.");
+  }
+
+  const normalizedUsername = normalizeUsername(username);
+  const existingRows = await d1Query("SELECT * FROM users WHERE username = ? LIMIT 1", [normalizedUsername]);
+  const existing = d1NormalizeUserRow(existingRows[0] || null);
+  if (!existing) {
+    throw new Error("User not found.");
+  }
+
+  const now = new Date().toISOString();
+  const passwordHash = bcrypt.hashSync(password, 12);
+  await d1Query("UPDATE users SET password_hash = ?, updated_at = ? WHERE username = ?", [
+    passwordHash,
+    now,
+    normalizedUsername
+  ]);
+  return sanitizeUser({
+    ...existing,
+    password_hash: passwordHash,
+    updated_at: now
+  });
+}
+
+async function updateUserLastMediaUrlStore({ username, mediaUrl }) {
+  if (!D1_USERS_ENABLED) {
+    return updateUserLastMediaUrl({ username, mediaUrl });
+  }
+  const normalizedUsername = normalizeUsername(username);
+  const existingRows = await d1Query("SELECT * FROM users WHERE username = ? LIMIT 1", [normalizedUsername]);
+  const existing = d1NormalizeUserRow(existingRows[0] || null);
+  if (!existing) {
+    throw new Error("User not found.");
+  }
+
+  const now = new Date().toISOString();
+  await d1Query("UPDATE users SET last_media_url = ?, updated_at = ? WHERE username = ?", [
+    mediaUrl || "",
+    now,
+    normalizedUsername
+  ]);
+  return sanitizeUser({
+    ...existing,
+    last_media_url: mediaUrl || "",
+    updated_at: now
+  });
+}
+
+async function ensureD1AdminUser() {
+  if (!D1_USERS_ENABLED) return;
+  const rows = await d1Query("SELECT id FROM users WHERE role = 'admin' LIMIT 1");
+  if (rows.length) {
+    return;
+  }
+
+  const adminUsername = normalizeUsername(process.env.ADMIN_USERNAME || "admin");
+  const generatedPassword = crypto.randomBytes(9).toString("base64url");
+  const adminPassword = process.env.ADMIN_PASSWORD || generatedPassword;
+  const now = new Date().toISOString();
+  await d1Query(
+    "INSERT INTO users (id, username, role, password_hash, last_media_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    [
+      crypto.randomUUID(),
+      adminUsername,
+      "admin",
+      bcrypt.hashSync(adminPassword, 12),
+      "",
+      now,
+      now
+    ]
+  );
+
+  if (!process.env.ADMIN_PASSWORD) {
+    console.warn(
+      `D1 admin created: username "${adminUsername}" password "${generatedPassword}". Set ADMIN_PASSWORD in environment.`
+    );
+  }
+}
+
+async function syncLocalUsersToD1() {
+  if (!D1_USERS_ENABLED) return;
+  const localUsers = readUsers().items || [];
+  if (!localUsers.length) {
+    return;
+  }
+  const remoteRows = await d1Query("SELECT username FROM users");
+  const remoteSet = new Set(remoteRows.map((row) => normalizeUsername(row.username)));
+
+  for (const localUser of localUsers) {
+    const username = normalizeUsername(localUser.username);
+    if (!username || remoteSet.has(username)) {
+      continue;
+    }
+    const passwordHash =
+      localUser.password_hash ||
+      (typeof localUser.password === "string" && localUser.password
+        ? bcrypt.hashSync(localUser.password, 12)
+        : "");
+    await d1Query(
+      "INSERT INTO users (id, username, role, password_hash, last_media_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [
+        localUser.id || crypto.randomUUID(),
+        username,
+        localUser.role === "admin" ? "admin" : "user",
+        passwordHash,
+        localUser.last_media_url || "",
+        localUser.created_at || new Date().toISOString(),
+        localUser.updated_at || new Date().toISOString()
+      ]
+    );
+    remoteSet.add(username);
+  }
 }
 
 function listContacts({ search = "", tag = "" } = {}) {
@@ -1406,25 +1660,29 @@ app.use("/api", (req, res, next) => {
   return next();
 });
 
-app.post("/api/auth/login", (req, res) => {
-  const username = normalizeUsername(req.body.username);
-  const password = req.body.password || "";
-  const user = getUserByUsername(username);
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const username = normalizeUsername(req.body.username);
+    const password = req.body.password || "";
+    const user = await getUserByUsernameStore(username);
 
-  if (!user || !verifyUserPassword(user, password)) {
-    return res.status(401).json({ error: "Invalid username or password." });
-  }
-
-  if (!user.password_hash && typeof user.password === "string") {
-    try {
-      updateUserPassword({ username: user.username, password });
-    } catch (error) {
-      // keep login successful even if migration write fails
+    if (!user || !verifyUserPassword(user, password)) {
+      return res.status(401).json({ error: "Invalid username or password." });
     }
-  }
 
-  req.session.user = sanitizeUser(user);
-  return res.json({ user: req.session.user });
+    if (!user.password_hash && typeof user.password === "string") {
+      try {
+        await updateUserPasswordStore({ username: user.username, password });
+      } catch (error) {
+        // keep login successful even if migration write fails
+      }
+    }
+
+    req.session.user = sanitizeUser(user);
+    return res.json({ user: req.session.user });
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Login failed." });
+  }
 });
 
 app.post("/api/auth/logout", (req, res) => {
@@ -1440,7 +1698,7 @@ app.get("/api/auth/me", (req, res) => {
   return res.json({ authenticated: true, user: req.session.user });
 });
 
-app.patch("/api/me/last-media-url", (req, res) => {
+app.patch("/api/me/last-media-url", async (req, res) => {
   try {
     const username = req.session.user?.username;
     const mediaUrl = (req.body.media_url || "").trim();
@@ -1448,7 +1706,7 @@ app.patch("/api/me/last-media-url", (req, res) => {
       return res.status(400).json({ error: "media_url must start with https://." });
     }
 
-    const user = updateUserLastMediaUrl({ username, mediaUrl });
+    const user = await updateUserLastMediaUrlStore({ username, mediaUrl });
     req.session.user = user;
     return res.json({ user });
   } catch (error) {
@@ -1456,18 +1714,18 @@ app.patch("/api/me/last-media-url", (req, res) => {
   }
 });
 
-app.post("/api/auth/change-password", (req, res) => {
+app.post("/api/auth/change-password", async (req, res) => {
   try {
     const username = req.session.user?.username;
     const currentPassword = req.body.current_password || "";
     const newPassword = req.body.new_password || "";
-    const user = getUserByUsername(username);
+    const user = await getUserByUsernameStore(username);
 
-    if (!user || !bcrypt.compareSync(currentPassword, user.password_hash)) {
+    if (!user || !verifyUserPassword(user, currentPassword)) {
       return res.status(400).json({ error: "Current password is incorrect." });
     }
 
-    updateUserPassword({ username, password: newPassword });
+    await updateUserPasswordStore({ username, password: newPassword });
     return res.json({ ok: true });
   } catch (error) {
     return res.status(400).json({ error: error.message || "Could not change password." });
@@ -1485,6 +1743,7 @@ app.get("/api/health", (req, res) => {
     has_connection_id: Boolean(cfg.telnyx_connection_id),
     has_from_number: Boolean(cfg.telnyx_from_number),
     has_fax_application_id: Boolean(cfg.telnyx_fax_application_id),
+    d1_users_enabled: D1_USERS_ENABLED,
     hosting: {
       is_render: IS_RENDER_RUNTIME,
       data_dir: DATA_DIR,
@@ -1708,7 +1967,7 @@ app.post("/api/faxes", async (req, res) => {
     markContactsUsedByFaxNumbers(queuedRecipients);
 
     try {
-      const updatedUser = updateUserLastMediaUrl({
+      const updatedUser = await updateUserLastMediaUrlStore({
         username: req.session.user?.username,
         mediaUrl: mediaUrls[0]
       });
@@ -1859,7 +2118,7 @@ app.post("/api/faxes/bulk", async (req, res) => {
       contacts: selectedContacts
     });
 
-    const updatedUser = updateUserLastMediaUrl({
+    const updatedUser = await updateUserLastMediaUrlStore({
       username: req.session.user?.username,
       mediaUrl
     });
@@ -1895,7 +2154,7 @@ app.get("/api/faxes/bulk-jobs/:id", (req, res) => {
 });
 
 app.post("/api/uploads", (req, res) => {
-  upload.single("file")(req, res, (error) => {
+  upload.single("file")(req, res, async (error) => {
     if (error instanceof multer.MulterError) {
       if (error.code === "LIMIT_FILE_SIZE") {
         return res.status(400).json({ error: "File too large. Maximum size is 50MB." });
@@ -1911,7 +2170,7 @@ app.post("/api/uploads", (req, res) => {
 
     const mediaUrl = getPublicMediaUrl(req, req.file.filename);
     try {
-      const updatedUser = updateUserLastMediaUrl({
+      const updatedUser = await updateUserLastMediaUrlStore({
         username: req.session.user?.username,
         mediaUrl
       });
@@ -1929,7 +2188,7 @@ app.post("/api/uploads", (req, res) => {
 });
 
 app.post("/api/uploads/batch", (req, res) => {
-  upload.array("files", MAX_UPLOAD_BATCH_FILES)(req, res, (error) => {
+  upload.array("files", MAX_UPLOAD_BATCH_FILES)(req, res, async (error) => {
     if (error instanceof multer.MulterError) {
       if (error.code === "LIMIT_FILE_SIZE") {
         return res.status(400).json({ error: "A file is too large. Maximum size is 50MB." });
@@ -1951,7 +2210,7 @@ app.post("/api/uploads/batch", (req, res) => {
 
     const mediaUrls = files.map((file) => getPublicMediaUrl(req, file.filename));
     try {
-      const updatedUser = updateUserLastMediaUrl({
+      const updatedUser = await updateUserLastMediaUrlStore({
         username: req.session.user?.username,
         mediaUrl: mediaUrls[0]
       });
@@ -1996,13 +2255,18 @@ app.post("/api/faxes/:id/refresh", async (req, res) => {
   }
 });
 
-app.get("/api/admin/users", requireAdmin, (req, res) => {
-  res.json({ items: listUsersSafe() });
+app.get("/api/admin/users", requireAdmin, async (req, res) => {
+  try {
+    const items = await listUsersSafeStore();
+    return res.json({ items });
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Could not load users." });
+  }
 });
 
-app.post("/api/admin/users", requireAdmin, (req, res) => {
+app.post("/api/admin/users", requireAdmin, async (req, res) => {
   try {
-    const created = createUser({
+    const created = await createUserStore({
       username: req.body.username,
       password: req.body.password,
       role: req.body.role || "user"
@@ -2013,9 +2277,9 @@ app.post("/api/admin/users", requireAdmin, (req, res) => {
   }
 });
 
-app.patch("/api/admin/users/:username/password", requireAdmin, (req, res) => {
+app.patch("/api/admin/users/:username/password", requireAdmin, async (req, res) => {
   try {
-    const updated = updateUserPassword({
+    const updated = await updateUserPasswordStore({
       username: req.params.username,
       password: req.body.password
     });
@@ -2212,18 +2476,39 @@ app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-ensureDataFiles();
-app.listen(port, () => {
-  console.log(`Fax app running on port ${port}`);
-  console.log(`Using data directory: ${DATA_DIR}`);
-  if (IS_RENDER_RUNTIME && !DATA_DIR.startsWith(`${RENDER_PERSISTENT_ROOT}/`)) {
-    console.warn(
-      "Render persistent disk is not configured for DATA_DIR. Users/settings/history will reset after restart/deploy."
-    );
+async function initializePersistence() {
+  ensureDataFiles();
+  if (!D1_USERS_ENABLED) {
+    return;
   }
-  if (IS_RENDER_RUNTIME) {
-    console.warn(
-      "Render free instances can sleep when idle. For always-on inbound fax webhooks, use a non-sleeping plan or external uptime pings."
-    );
-  }
-});
+  await ensureD1UsersTable();
+  await syncLocalUsersToD1();
+  await ensureD1AdminUser();
+}
+
+initializePersistence()
+  .then(() => {
+    app.listen(port, () => {
+      console.log(`Fax app running on port ${port}`);
+      console.log(`Using data directory: ${DATA_DIR}`);
+      if (D1_USERS_ENABLED) {
+        console.log(`Cloudflare D1 users enabled (db: ${D1_DATABASE_ID}).`);
+      } else {
+        console.log("Cloudflare D1 users disabled. Using local file user store.");
+      }
+      if (IS_RENDER_RUNTIME && !DATA_DIR.startsWith(`${RENDER_PERSISTENT_ROOT}/`)) {
+        console.warn(
+          "Render persistent disk is not configured for DATA_DIR. Users/settings/history will reset after restart/deploy."
+        );
+      }
+      if (IS_RENDER_RUNTIME) {
+        console.warn(
+          "Render free instances can sleep when idle. For always-on inbound fax webhooks, use a non-sleeping plan or external uptime pings."
+        );
+      }
+    });
+  })
+  .catch((error) => {
+    console.error(`Startup failed: ${error.message || error}`);
+    process.exit(1);
+  });

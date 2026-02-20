@@ -37,6 +37,10 @@
 - Updated `/api/faxes` to return local+archive merged history with non-blocking `sync_warning`.
 - Added Render runtime diagnostics in `/api/health` and startup warnings for non-persistent data dir.
 - Added Render startup warning about free-tier sleep impact on inbound webhook reliability.
+- Added optional Cloudflare D1-backed user persistence (`CLOUDFLARE_*` env support).
+- Added D1 startup bootstrap: users table creation, local-user sync, and admin-user ensure.
+- Updated auth/user routes to use async store wrappers that target D1 when enabled.
+- Added `/api/health` flag `d1_users_enabled` for deployment verification.
 
 ### Files Changed
 - `/Users/alex/Documents/Projects/Telnyx/server.js`

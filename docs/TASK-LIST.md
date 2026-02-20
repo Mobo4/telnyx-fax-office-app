@@ -31,6 +31,7 @@
 - [x] Add Telnyx request timeout to prevent fax-history hangs.
 - [x] Merge active and archive stores for latest-50 history rendering.
 - [x] Add Render data-path diagnostics and persistent-disk warning logs.
+- [x] Add optional Cloudflare D1 user persistence for free-tier durability.
 
 ## Next Tasks
 - [ ] Add automated tests for `/api/faxes` multi-recipient success/failure mixes.
@@ -39,3 +40,4 @@
 - [ ] Add per-user timezone setting for cover page timestamps.
 - [ ] Add pagination for address book list when contact count approaches 3000.
 - [ ] Add Render deployment guide with exact persistent disk + no-sleep plan checklist screenshots.
+- [ ] Extend D1 persistence from users to fax history/settings/contacts (optional phase 2).

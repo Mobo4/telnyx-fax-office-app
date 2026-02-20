@@ -11,6 +11,7 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 
 ## Core Capabilities
 - Role-based login (`admin`, `user`).
+- Optional Cloudflare D1-backed user persistence (instead of local user JSON).
 - Outbound fax send to one or many recipients.
 - Sent and Received history tabs with file links.
 - Address Book with search, tags, CSV import, frequent contacts.
@@ -72,6 +73,15 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - `/Users/alex/Documents/Projects/Telnyx/data/config.json`
 - `/Users/alex/Documents/Projects/Telnyx/data/users.json`
 
+## User Persistence Modes
+- Default: local JSON user store (`data/users.json`).
+- Optional D1 mode: enabled when all are present:
+  - `CLOUDFLARE_ACCOUNT_ID`
+  - `CLOUDFLARE_D1_DATABASE_ID`
+  - either `CLOUDFLARE_API_TOKEN` or (`CLOUDFLARE_API_KEY` + `CLOUDFLARE_EMAIL`)
+- In D1 mode, startup ensures table exists and syncs local users to D1 once.
+- Health endpoint reports `"d1_users_enabled": true|false`.
+
 ## Auth/User Persistence Notes
 - User store is normalized on read/write (supports legacy `items` map or array layouts).
 - If no admin exists, bootstrap admin is re-created automatically.
@@ -99,6 +109,7 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - Inbound reliability requires always-on hosting. Free sleep/idle plans can delay or miss time-sensitive webhook delivery.
 - Keep inbound fax email recipient configured in Telnyx as backup while webhook flow is being monitored.
 - Render free sleep cannot be fully fixed in app code; use non-sleeping plan or external keepalive pings to `/api/health`.
+- D1 persistence keeps users across restarts, but does not prevent free-tier sleep delays for inbound webhooks.
 
 ## Gaps / Next Hardening
 - Add automated integration tests for send success/failure paths.
