@@ -1,0 +1,3 @@
+display_name: Fax Hardening Orchestrator
+short_description: Coordinate parallel security and reliability hardening tracks for the fax app.
+default_prompt: Orchestrate and merge the five hardening subagents for webhook signatures, media access security, auth throttling, queue recovery, and durable sessions.

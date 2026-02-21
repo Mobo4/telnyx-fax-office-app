@@ -3,6 +3,7 @@
 ## Version
 - Date: 2026-02-20
 - Scope: Send reliability, confirmation UX, multi-file handling, login page polish, history retention, auth hardening, deployment guidance, D1 persistence.
+- Scope: security hardening (webhook verification, signed media delivery, login throttling, queue recovery, durable sessions).
 
 ## Product Goal
 Provide a secure browser-based fax system for Eyecare Care of Orange County with reliable outbound sending, clear confirmation feedback, and admin-controlled settings.
@@ -35,6 +36,8 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Admin routes return `403` for non-admin users.
 - User storage must survive schema drift (array/map migration), with bcrypt-hash compatibility for old credentials.
 - Optional Cloudflare D1 persistence for user accounts when running on ephemeral hosts.
+- Add login throttling per IP and temporary lockouts per username.
+- Add durable session store (D1-backed where configured) for restart-safe auth sessions.
 
 ### Send Fax Workflow
 - Recipient input accepts:
@@ -86,6 +89,8 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - `/api/uploads/batch` enforces max 5 files.
 - `/api/faxes` validates media URLs as public `https://` links (no silent filtering).
 - Errors are explicit and user-readable.
+- Uploaded files are not directly public static assets; use signed expiring media links.
+- Telnyx webhook payloads should be signature-verified when key is configured.
 
 ### Deployment and Availability
 - Production requires a public HTTPS host for webhook and document retrieval.
@@ -95,6 +100,8 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Telnyx inbound email recipient remains enabled as backup.
 - For Render persistence, data should be stored on mounted disk path (default `/var/data/telnyx-fax-office-app`).
 - Alternative persistence path: Cloudflare D1 for users, settings, contacts, fax history, and bulk job snapshots on free/ephemeral hosts.
+- Session durability path: D1 sessions table (when D1 enabled) instead of memory-only sessions.
+- Queue durability path: startup/interval bulk worker processing to recover queued jobs.
 
 ## Non-Functional Requirements
 - Clear error messages for blocked send conditions.
@@ -117,6 +124,11 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Non-admin users cannot open/settings panel or call admin settings endpoints.
 - Server rejects non-HTTPS media URLs with explicit error.
 - PRD and knowledge docs include hosting decision and backup inbound path.
+- Webhook route rejects invalid signatures when verification is enabled.
+- Media URLs used for faxing are signed and expire.
+- Repeated failed login attempts trigger throttling/lockout responses.
+- Queued bulk jobs are resumed by background worker after restart.
+- Sessions persist across restart when D1 is configured.
 
 ## Gaps Reviewed and Resolved
 - Gap: send failures were not obvious enough.

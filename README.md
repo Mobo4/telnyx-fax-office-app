@@ -60,6 +60,15 @@ Set:
   - `CLOUDFLARE_ACCOUNT_ID`
   - `CLOUDFLARE_D1_DATABASE_ID`
   - either `CLOUDFLARE_API_TOKEN` or (`CLOUDFLARE_API_KEY` + `CLOUDFLARE_EMAIL`)
+- Security hardening:
+  - `TELNYX_WEBHOOK_PUBLIC_KEY`
+  - `WEBHOOK_SIGNATURE_REQUIRED`
+  - `MEDIA_URL_SIGNING_SECRET`
+  - `MEDIA_URL_TTL_SECONDS`
+  - `UPLOAD_RETENTION_SECONDS`
+  - `AUTH_RATE_WINDOW_MS`, `AUTH_RATE_MAX_ATTEMPTS_PER_IP`
+  - `AUTH_LOCKOUT_THRESHOLD`, `AUTH_LOCKOUT_MS`
+  - `BULK_WORKER_POLL_MS`
 
 ## 3. Run locally
 
@@ -96,6 +105,11 @@ This app also accepts:
 
 - `POST /api/webhooks/telnyx`
 
+Webhook hardening:
+
+- Set `TELNYX_WEBHOOK_PUBLIC_KEY` to the signing key from Telnyx portal.
+- Keep `WEBHOOK_SIGNATURE_REQUIRED=true` in production.
+
 ## 6. How verification works
 
 1. App sends fax with `POST /v2/faxes`
@@ -119,8 +133,11 @@ This app also accepts:
 
 1. In the Send Fax section, attach one or multiple PDF/TIFF files directly.
 2. When you click `Send Fax`, attached files are uploaded to `/api/uploads/batch`.
-3. The app sends using uploaded file URLs internally; users do not need to enter media URLs.
-4. The first uploaded media URL is saved as your user's last URL.
+3. Uploaded files are stored outside the public web root.
+4. The app generates signed expiring media URLs under `/media/:filename?...` for Telnyx retrieval.
+5. The app sends using those signed URLs internally; users do not need to enter media URLs.
+6. Old uploaded files are cleaned up automatically based on retention settings.
+7. The first uploaded media URL is saved as your user's last URL.
 
 ## 7.2 Recipient behavior
 
@@ -195,3 +212,6 @@ CSV template:
 - Do not expose your Telnyx API key in frontend code.
 - Rotate keys if shared in chat or logs.
 - Change bootstrap admin password immediately after first login.
+- Keep webhook signature validation enabled in production.
+- Use scoped Cloudflare API tokens instead of global API keys.
+- Login endpoints include IP throttling and temporary account lockout after repeated failures.

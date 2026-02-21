@@ -44,6 +44,14 @@
 - Added D1 app-store snapshot persistence for `config`, `contacts`, `faxes`, `faxes_archive`, and `bulk_jobs`.
 - Added startup hydration/seed logic for app stores (D1 <-> local JSON sync).
 - Added `/api/health` flag `d1_app_stores_enabled` for app-store persistence verification.
+- Added optional webhook signature validation for Telnyx webhooks (`TELNYX_WEBHOOK_PUBLIC_KEY`).
+- Added signed/expiring media URL delivery endpoint (`/media/:filename`) and moved uploads outside public static root.
+- Added auth brute-force protections (IP-based login throttling + username lockout window).
+- Added background bulk worker polling/recovery loop for queued jobs.
+- Added optional D1-backed session store (`sessions` table) for durable auth sessions.
+- Added detailed hardening PRD: `/Users/alex/Documents/Projects/Telnyx/docs/PRD-security-hardening-wave1.md`.
+- Added detailed hardening task list: `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-security-hardening-wave1.md`.
+- Added parallel hardening skill set under `/Users/alex/Documents/Projects/Telnyx/skills/`.
 
 ### Files Changed
 - `/Users/alex/Documents/Projects/Telnyx/server.js`

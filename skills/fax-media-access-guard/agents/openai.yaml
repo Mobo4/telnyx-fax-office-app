@@ -1,0 +1,3 @@
+display_name: Media Access Guard
+short_description: Secure fax media delivery with signed expiring URLs.
+default_prompt: Remove public upload exposure and implement signed media URL delivery for Telnyx retrieval.

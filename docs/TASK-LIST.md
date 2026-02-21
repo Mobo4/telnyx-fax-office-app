@@ -33,6 +33,11 @@
 - [x] Add Render data-path diagnostics and persistent-disk warning logs.
 - [x] Add optional Cloudflare D1 user persistence for free-tier durability.
 - [x] Extend D1 persistence to settings/contacts/fax history/bulk job stores.
+- [x] Add Telnyx webhook signature verification framework.
+- [x] Replace public uploads with signed expiring media delivery endpoint.
+- [x] Add login IP throttling and account lockout controls.
+- [x] Add background bulk worker interval/startup recovery loop.
+- [x] Add D1-backed session store for durable auth sessions.
 
 ## Next Tasks
 - [ ] Add automated tests for `/api/faxes` multi-recipient success/failure mixes.
@@ -41,3 +46,5 @@
 - [ ] Add per-user timezone setting for cover page timestamps.
 - [ ] Add pagination for address book list when contact count approaches 3000.
 - [ ] Add Render deployment guide with exact persistent disk + no-sleep plan checklist screenshots.
+- [ ] Add webhook signature replay cache (event-id dedupe) for stronger webhook hardening.
+- [ ] Add at-rest encryption for uploaded files and automated retention-policy reporting.

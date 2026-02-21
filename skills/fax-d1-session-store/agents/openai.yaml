@@ -1,0 +1,3 @@
+display_name: D1 Session Store
+short_description: Persist auth sessions in Cloudflare D1.
+default_prompt: Implement and enable D1-backed session storage for express-session.

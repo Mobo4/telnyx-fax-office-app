@@ -3,6 +3,10 @@
 ## Purpose
 Operational reference for architecture, workflow behavior, limits, and known edge cases so another engineer/AI can continue without re-discovery.
 
+## Related Planning Docs
+- `/Users/alex/Documents/Projects/Telnyx/docs/PRD-security-hardening-wave1.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-security-hardening-wave1.md`
+
 ## Stack
 - Backend: Node.js + Express (`/Users/alex/Documents/Projects/Telnyx/server.js`)
 - Frontend: vanilla JS (`/Users/alex/Documents/Projects/Telnyx/public/app.js`)
@@ -12,6 +16,7 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 ## Core Capabilities
 - Role-based login (`admin`, `user`).
 - Optional Cloudflare D1-backed persistence for users + app stores.
+- Optional Cloudflare D1-backed session storage.
 - Outbound fax send to one or many recipients.
 - Sent and Received history tabs with file links.
 - Address Book with search, tags, CSV import, frequent contacts.
@@ -20,6 +25,10 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - Optional outbound copy email.
 - Post-send form reset after confirmation modal OK.
 - Admin settings hard-gated to admin role in UI and API (`403` on admin routes for non-admin).
+- Login throttling and account lockout after repeated failures.
+- Signed expiring media links for outbound fax document retrieval.
+- Background worker loop for queued bulk fax recovery.
+- Optional webhook signature verification for Telnyx events.
 
 ## API Surface (primary)
 - Auth: `/api/auth/login`, `/api/auth/logout`, `/api/auth/me`
@@ -30,6 +39,7 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - Admin: `/api/admin/settings`, `/api/admin/telnyx/fax-application`, `/api/admin/users`
 - Archive: `/api/faxes/archive` (admin-only)
 - Health: `/api/health` (includes hosting/storage diagnostics)
+- Media: `/media/:filename?exp=...&sig=...` (signed public fetch URL for Telnyx media retrieval)
 
 ## Send Workflow (current)
 1. User fills recipients.
@@ -64,6 +74,8 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - No silent media URL dropping.
 - Telnyx API calls are timeout-bounded (`TELNYX_HTTP_TIMEOUT_MS`, default 5000ms) to avoid hanging history UI.
 - `/api/faxes` now includes `sync_warning` when Telnyx sync fails, while still returning local/archived history.
+- Login attempts are throttled by IP and temporarily lock per username after repeated failures.
+- Webhook route can enforce signature verification via Telnyx public key.
 
 ## Data Files
 - `/Users/alex/Documents/Projects/Telnyx/data/faxes.json`
@@ -99,6 +111,11 @@ Operational reference for architecture, workflow behavior, limits, and known edg
   - writes are queued and synced to D1 in background
 - Health endpoint reports `"d1_app_stores_enabled": true|false`.
 
+## Session Persistence Modes
+- Default: in-memory session store.
+- Optional D1 mode: enabled when `CLOUDFLARE_*` D1 env vars are present.
+- D1 session table: `sessions` with expiration timestamps.
+
 ## Auth/User Persistence Notes
 - User store is normalized on read/write (supports legacy `items` map or array layouts).
 - If no admin exists, bootstrap admin is re-created automatically.
@@ -127,6 +144,7 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - Keep inbound fax email recipient configured in Telnyx as backup while webhook flow is being monitored.
 - Render free sleep cannot be fully fixed in app code; use non-sleeping plan or external keepalive pings to `/api/health`.
 - D1 persistence keeps users across restarts, but does not prevent free-tier sleep delays for inbound webhooks.
+- If webhook signature validation is enabled without a valid public key, inbound webhook updates will fail with `401`.
 
 ## Gaps / Next Hardening
 - Add automated integration tests for send success/failure paths.

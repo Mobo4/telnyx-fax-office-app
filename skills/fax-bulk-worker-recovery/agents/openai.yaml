@@ -1,0 +1,3 @@
+display_name: Bulk Worker Recovery
+short_description: Add durable queue recovery loop for bulk fax jobs.
+default_prompt: Implement startup and interval recovery for queued bulk fax jobs.

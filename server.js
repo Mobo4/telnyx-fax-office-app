@@ -4,6 +4,7 @@ const path = require("path");
 const crypto = require("crypto");
 const session = require("express-session");
 const bcrypt = require("bcryptjs");
+const nacl = require("tweetnacl");
 const multer = require("multer");
 const { parse: parseCsv } = require("csv-parse/sync");
 const nodemailer = require("nodemailer");
@@ -23,13 +24,14 @@ const DATA_DIR =
   (IS_RENDER_RUNTIME && fs.existsSync(RENDER_PERSISTENT_ROOT)
     ? DEFAULT_RENDER_DATA_DIR
     : path.join(__dirname, "data"));
+const PUBLIC_DIR = path.join(__dirname, "public");
 const STORE_FILE = path.join(DATA_DIR, "faxes.json");
 const FAX_ARCHIVE_FILE = path.join(DATA_DIR, "faxes_archive.json");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const CONFIG_FILE = path.join(DATA_DIR, "config.json");
 const CONTACTS_FILE = path.join(DATA_DIR, "contacts.json");
 const BULK_JOBS_FILE = path.join(DATA_DIR, "bulk_jobs.json");
-const UPLOADS_DIR = path.join(__dirname, "public", "uploads");
+const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const MAX_CONTACTS = 3000;
 const MAX_SEND_RECIPIENTS = 100;
 const MAX_UPLOAD_BATCH_FILES = 5;
@@ -44,6 +46,26 @@ const D1_USERS_ENABLED = Boolean(
   D1_ACCOUNT_ID && D1_DATABASE_ID && (D1_API_TOKEN || (D1_API_KEY && D1_EMAIL))
 );
 const D1_APP_STORES_ENABLED = D1_USERS_ENABLED;
+const TELNYX_WEBHOOK_PUBLIC_KEY = (process.env.TELNYX_WEBHOOK_PUBLIC_KEY || "").trim();
+const WEBHOOK_SIGNATURE_REQUIRED =
+  process.env.WEBHOOK_SIGNATURE_REQUIRED === "true" ||
+  (process.env.WEBHOOK_SIGNATURE_REQUIRED === undefined && Boolean(TELNYX_WEBHOOK_PUBLIC_KEY));
+const WEBHOOK_MAX_AGE_SECONDS = Math.max(30, Number(process.env.WEBHOOK_MAX_AGE_SECONDS || 300));
+const MEDIA_URL_SIGNING_SECRET = (process.env.MEDIA_URL_SIGNING_SECRET || "").trim();
+const MEDIA_URL_TTL_SECONDS = Math.max(60, Number(process.env.MEDIA_URL_TTL_SECONDS || 3600));
+const UPLOAD_RETENTION_SECONDS = Math.max(
+  MEDIA_URL_TTL_SECONDS,
+  Number(process.env.UPLOAD_RETENTION_SECONDS || 2 * 24 * 60 * 60)
+);
+const AUTH_RATE_WINDOW_MS = Math.max(60_000, Number(process.env.AUTH_RATE_WINDOW_MS || 15 * 60 * 1000));
+const AUTH_RATE_MAX_ATTEMPTS_PER_IP = Math.max(
+  5,
+  Number(process.env.AUTH_RATE_MAX_ATTEMPTS_PER_IP || 30)
+);
+const AUTH_LOCKOUT_THRESHOLD = Math.max(3, Number(process.env.AUTH_LOCKOUT_THRESHOLD || 8));
+const AUTH_LOCKOUT_MS = Math.max(60_000, Number(process.env.AUTH_LOCKOUT_MS || 15 * 60 * 1000));
+const BULK_WORKER_POLL_MS = Math.max(5_000, Number(process.env.BULK_WORKER_POLL_MS || 15_000));
+const SESSION_MAX_AGE_MS = Math.max(60_000, Number(process.env.SESSION_MAX_AGE_MS || 12 * 60 * 60 * 1000));
 const D1_SYNC_STORE_FILENAMES = new Set([
   "faxes.json",
   "faxes_archive.json",
@@ -57,30 +79,28 @@ let isD1AppStoreHydration = false;
 let d1AppStoresReady = false;
 let d1StoreSyncTimer = null;
 const pendingD1StoreSync = new Map();
+let bulkWorkerInterval = null;
+let uploadCleanupInterval = null;
+const authIpAttemptState = new Map();
+const authUserAttemptState = new Map();
 
 const sessionSecret = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
 if (!process.env.SESSION_SECRET) {
   console.warn("SESSION_SECRET not set. A temporary secret is being used for this process.");
 }
+const effectiveMediaUrlSigningSecret = MEDIA_URL_SIGNING_SECRET || sessionSecret;
 
 app.set("trust proxy", 1);
-app.use(express.json({ limit: "2mb" }));
-app.use(express.urlencoded({ extended: true }));
 app.use(
-  session({
-    name: "fax_app_session",
-    secret: sessionSecret,
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-      maxAge: 12 * 60 * 60 * 1000
+  express.json({
+    limit: "2mb",
+    verify: (req, res, buffer) => {
+      req.rawBody = buffer?.toString("utf8") || "";
     }
   })
 );
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.static(PUBLIC_DIR));
 
 function ensureDataDir() {
   if (!fs.existsSync(DATA_DIR)) {
@@ -206,6 +226,205 @@ function normalizeTags(input) {
         .filter(Boolean)
     )
   );
+}
+
+function safeBasename(value) {
+  return path.basename((value || "").toString().trim());
+}
+
+function signMediaAccess({ filename, exp }) {
+  return crypto
+    .createHmac("sha256", effectiveMediaUrlSigningSecret)
+    .update(`${filename}|${exp}`)
+    .digest("base64url");
+}
+
+function buildSignedMediaUrl(req, filename, ttlSeconds = MEDIA_URL_TTL_SECONDS) {
+  const safeName = safeBasename(filename);
+  const exp = Math.floor(Date.now() / 1000) + Math.max(60, Number(ttlSeconds || MEDIA_URL_TTL_SECONDS));
+  const sig = signMediaAccess({ filename: safeName, exp });
+  return `${req.protocol}://${req.get("host")}/media/${encodeURIComponent(safeName)}?exp=${exp}&sig=${encodeURIComponent(sig)}`;
+}
+
+function verifySignedMediaAccess({ filename, exp, sig }) {
+  const safeName = safeBasename(filename);
+  const expNum = Number(exp);
+  if (!safeName || !Number.isFinite(expNum) || expNum <= 0) {
+    return false;
+  }
+  if (Math.floor(Date.now() / 1000) > expNum) {
+    return false;
+  }
+  const expected = signMediaAccess({ filename: safeName, exp: expNum });
+  const provided = (sig || "").toString();
+  const expectedBuf = Buffer.from(expected);
+  const providedBuf = Buffer.from(provided);
+  if (!expectedBuf.length || expectedBuf.length !== providedBuf.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(expectedBuf, providedBuf);
+}
+
+function getAuthClientIp(req) {
+  return (req.ip || req.headers["x-forwarded-for"] || req.connection?.remoteAddress || "unknown")
+    .toString()
+    .split(",")[0]
+    .trim();
+}
+
+function pruneAttemptMap(map, cutoffMs) {
+  const now = Date.now();
+  map.forEach((entry, key) => {
+    if (!entry) {
+      map.delete(key);
+      return;
+    }
+    if ((entry.lastFailedAt || 0) < now - cutoffMs && (entry.lockedUntil || 0) < now) {
+      map.delete(key);
+    }
+  });
+}
+
+function getAttemptState(map, key) {
+  const k = (key || "").toString();
+  if (!k) return null;
+  const now = Date.now();
+  const existing = map.get(k) || {
+    count: 0,
+    firstFailedAt: 0,
+    lastFailedAt: 0,
+    lockedUntil: 0
+  };
+
+  if (!existing.firstFailedAt || now - existing.firstFailedAt > AUTH_RATE_WINDOW_MS) {
+    existing.count = 0;
+    existing.firstFailedAt = now;
+  }
+  map.set(k, existing);
+  return existing;
+}
+
+function registerFailedAuthAttempt({ ip, username }) {
+  const now = Date.now();
+
+  const ipState = getAttemptState(authIpAttemptState, ip);
+  if (ipState) {
+    ipState.count += 1;
+    ipState.lastFailedAt = now;
+    authIpAttemptState.set(ip, ipState);
+  }
+
+  const normalizedUsername = normalizeUsername(username);
+  if (normalizedUsername) {
+    const userState = getAttemptState(authUserAttemptState, normalizedUsername);
+    if (userState) {
+      userState.count += 1;
+      userState.lastFailedAt = now;
+      if (userState.count >= AUTH_LOCKOUT_THRESHOLD) {
+        userState.lockedUntil = now + AUTH_LOCKOUT_MS;
+      }
+      authUserAttemptState.set(normalizedUsername, userState);
+    }
+  }
+
+  pruneAttemptMap(authIpAttemptState, AUTH_RATE_WINDOW_MS * 2);
+  pruneAttemptMap(authUserAttemptState, AUTH_LOCKOUT_MS * 2);
+}
+
+function clearAuthAttemptState({ ip, username }) {
+  if (ip) {
+    authIpAttemptState.delete(ip);
+  }
+  const normalizedUsername = normalizeUsername(username);
+  if (normalizedUsername) {
+    authUserAttemptState.delete(normalizedUsername);
+  }
+}
+
+function getAuthProtectionStatus({ ip, username }) {
+  const now = Date.now();
+  const ipState = ip ? getAttemptState(authIpAttemptState, ip) : null;
+  if (ipState && now - ipState.firstFailedAt <= AUTH_RATE_WINDOW_MS && ipState.count >= AUTH_RATE_MAX_ATTEMPTS_PER_IP) {
+    return {
+      blocked: true,
+      status: 429,
+      error: "Too many login attempts from this IP. Try again shortly."
+    };
+  }
+
+  const normalizedUsername = normalizeUsername(username);
+  const userState = normalizedUsername ? authUserAttemptState.get(normalizedUsername) : null;
+  if (userState?.lockedUntil && userState.lockedUntil > now) {
+    const retrySec = Math.ceil((userState.lockedUntil - now) / 1000);
+    return {
+      blocked: true,
+      status: 429,
+      error: `Account temporarily locked due to repeated failed logins. Retry in ${retrySec}s.`
+    };
+  }
+  return { blocked: false };
+}
+
+function verifyTelnyxWebhookSignature(req) {
+  if (!WEBHOOK_SIGNATURE_REQUIRED) {
+    return { valid: true, reason: "disabled" };
+  }
+  if (!TELNYX_WEBHOOK_PUBLIC_KEY) {
+    return { valid: false, reason: "missing_public_key" };
+  }
+
+  const signature = req.get("telnyx-signature-ed25519") || "";
+  const timestamp = req.get("telnyx-timestamp") || "";
+  const rawBody = req.rawBody || "";
+  if (!signature || !timestamp || !rawBody) {
+    return { valid: false, reason: "missing_signature_headers" };
+  }
+
+  const ts = Number(timestamp);
+  if (!Number.isFinite(ts)) {
+    return { valid: false, reason: "invalid_timestamp" };
+  }
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (Math.abs(nowSec - ts) > WEBHOOK_MAX_AGE_SECONDS) {
+    return { valid: false, reason: "timestamp_out_of_range" };
+  }
+
+  let publicKey;
+  let sigBytes;
+  try {
+    publicKey = Buffer.from(TELNYX_WEBHOOK_PUBLIC_KEY.replace(/\s+/g, ""), "base64");
+    sigBytes = Buffer.from(signature.replace(/\s+/g, ""), "base64");
+  } catch (error) {
+    return { valid: false, reason: "signature_decode_failed" };
+  }
+  if (publicKey.length !== 32 || sigBytes.length !== 64) {
+    return { valid: false, reason: "signature_length_invalid" };
+  }
+
+  const message = Buffer.from(`${timestamp}|${rawBody}`);
+  const valid = nacl.sign.detached.verify(
+    new Uint8Array(message),
+    new Uint8Array(sigBytes),
+    new Uint8Array(publicKey)
+  );
+  return { valid, reason: valid ? "ok" : "signature_invalid" };
+}
+
+function cleanExpiredUploads() {
+  ensureUploadsDir();
+  const files = fs.readdirSync(UPLOADS_DIR, { withFileTypes: true }).filter((item) => item.isFile());
+  const cutoffMs = Date.now() - UPLOAD_RETENTION_SECONDS * 1000;
+  for (const file of files) {
+    const filePath = path.join(UPLOADS_DIR, file.name);
+    try {
+      const stat = fs.statSync(filePath);
+      if (stat.mtimeMs < cutoffMs) {
+        fs.unlinkSync(filePath);
+      }
+    } catch (error) {
+      // non-blocking
+    }
+  }
 }
 
 function matchesTagFilter(tags, selectedTags, mode) {
@@ -639,6 +858,123 @@ async function d1Query(sql, params = []) {
   }
   return Array.isArray(result?.results) ? result.results : [];
 }
+
+async function ensureD1SessionsTable() {
+  if (!D1_USERS_ENABLED) return;
+  await d1Query(`CREATE TABLE IF NOT EXISTS sessions (
+    sid TEXT PRIMARY KEY,
+    payload TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`);
+}
+
+class D1SessionStore extends session.Store {
+  constructor() {
+    super();
+    this.ready = ensureD1SessionsTable();
+  }
+
+  get(sid, callback) {
+    this.ready
+      .then(async () => {
+        const rows = await d1Query(
+          "SELECT payload, expires_at FROM sessions WHERE sid = ? LIMIT 1",
+          [sid]
+        );
+        const row = rows[0];
+        if (!row) {
+          callback(null, null);
+          return;
+        }
+
+        const now = Date.now();
+        const expiresAt = Number(row.expires_at || 0);
+        if (expiresAt && expiresAt <= now) {
+          await d1Query("DELETE FROM sessions WHERE sid = ?", [sid]).catch(() => {});
+          callback(null, null);
+          return;
+        }
+
+        let parsed = null;
+        try {
+          parsed = JSON.parse(row.payload || "{}");
+        } catch (error) {
+          parsed = null;
+        }
+        callback(null, parsed);
+      })
+      .catch((error) => callback(error));
+  }
+
+  set(sid, sess, callback) {
+    this.ready
+      .then(async () => {
+        const expiresAt = sess?.cookie?.expires
+          ? new Date(sess.cookie.expires).getTime()
+          : Date.now() + SESSION_MAX_AGE_MS;
+        await d1Query(
+          `INSERT INTO sessions (sid, payload, expires_at, updated_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(sid) DO UPDATE SET
+             payload = excluded.payload,
+             expires_at = excluded.expires_at,
+             updated_at = excluded.updated_at`,
+          [sid, JSON.stringify(sess || {}), Math.max(Date.now(), expiresAt), Date.now()]
+        );
+        callback(null);
+      })
+      .catch((error) => callback(error));
+  }
+
+  destroy(sid, callback) {
+    this.ready
+      .then(async () => {
+        await d1Query("DELETE FROM sessions WHERE sid = ?", [sid]);
+        callback(null);
+      })
+      .catch((error) => callback(error));
+  }
+
+  touch(sid, sess, callback) {
+    this.ready
+      .then(async () => {
+        const expiresAt = sess?.cookie?.expires
+          ? new Date(sess.cookie.expires).getTime()
+          : Date.now() + SESSION_MAX_AGE_MS;
+        await d1Query("UPDATE sessions SET expires_at = ?, updated_at = ? WHERE sid = ?", [
+          Math.max(Date.now(), expiresAt),
+          Date.now(),
+          sid
+        ]);
+        callback(null);
+      })
+      .catch((error) => callback(error));
+  }
+}
+
+function createSessionStore() {
+  if (!D1_USERS_ENABLED) {
+    return undefined;
+  }
+  return new D1SessionStore();
+}
+
+app.use(
+  session({
+    name: "fax_app_session",
+    secret: sessionSecret,
+    resave: false,
+    saveUninitialized: false,
+    store: createSessionStore(),
+    cookie: {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      maxAge: SESSION_MAX_AGE_MS
+    }
+  })
+);
 
 function d1NormalizeUserRow(row) {
   if (!row) return null;
@@ -1565,10 +1901,10 @@ async function telnyxPatchFaxApplication({ apiKey, faxApplicationId, payload }) 
 function localAttachmentFromMediaUrl(mediaUrl) {
   try {
     const parsed = new URL(mediaUrl);
-    if (!parsed.pathname.startsWith("/uploads/")) {
+    if (!parsed.pathname.startsWith("/media/")) {
       return null;
     }
-    const filename = path.basename(parsed.pathname);
+    const filename = safeBasename(parsed.pathname.replace("/media/", ""));
     const localPath = path.join(UPLOADS_DIR, filename);
     if (!fs.existsSync(localPath)) {
       return null;
@@ -1594,7 +1930,7 @@ function localAttachmentsFromMediaUrls(mediaUrls) {
 }
 
 function getPublicMediaUrl(req, filename) {
-  return `${req.protocol}://${req.get("host")}/uploads/${filename}`;
+  return buildSignedMediaUrl(req, filename);
 }
 
 async function generateCoverPageMediaUrl({
@@ -1791,9 +2127,15 @@ app.post("/api/auth/login", async (req, res) => {
   try {
     const username = normalizeUsername(req.body.username);
     const password = req.body.password || "";
+    const clientIp = getAuthClientIp(req);
+    const protectionStatus = getAuthProtectionStatus({ ip: clientIp, username });
+    if (protectionStatus.blocked) {
+      return res.status(protectionStatus.status || 429).json({ error: protectionStatus.error });
+    }
     const user = await getUserByUsernameStore(username);
 
     if (!user || !verifyUserPassword(user, password)) {
+      registerFailedAuthAttempt({ ip: clientIp, username });
       return res.status(401).json({ error: "Invalid username or password." });
     }
 
@@ -1806,6 +2148,7 @@ app.post("/api/auth/login", async (req, res) => {
     }
 
     req.session.user = sanitizeUser(user);
+    clearAuthAttemptState({ ip: clientIp, username });
     return res.json({ user: req.session.user });
   } catch (error) {
     return res.status(400).json({ error: error.message || "Login failed." });
@@ -1872,10 +2215,18 @@ app.get("/api/health", (req, res) => {
     has_fax_application_id: Boolean(cfg.telnyx_fax_application_id),
     d1_users_enabled: D1_USERS_ENABLED,
     d1_app_stores_enabled: D1_APP_STORES_ENABLED,
+    webhook_signature_required: WEBHOOK_SIGNATURE_REQUIRED,
+    webhook_public_key_configured: Boolean(TELNYX_WEBHOOK_PUBLIC_KEY),
     hosting: {
       is_render: IS_RENDER_RUNTIME,
       data_dir: DATA_DIR,
       persistent_data_path: isPersistentDataPath
+    },
+    auth: {
+      rate_window_ms: AUTH_RATE_WINDOW_MS,
+      max_attempts_per_ip: AUTH_RATE_MAX_ATTEMPTS_PER_IP,
+      lockout_threshold: AUTH_LOCKOUT_THRESHOLD,
+      lockout_ms: AUTH_LOCKOUT_MS
     }
   });
 });
@@ -2585,6 +2936,10 @@ app.patch("/api/admin/telnyx/fax-application", requireAdmin, async (req, res) =>
 
 app.post(["/api/webhooks/telnyx", "/telnyx/webhook"], (req, res) => {
   try {
+    const signature = verifyTelnyxWebhookSignature(req);
+    if (!signature.valid) {
+      return res.status(401).json({ error: `Webhook signature invalid (${signature.reason}).` });
+    }
     const parsed = parseWebhook(req.body);
     if (parsed.faxId) {
       upsertFax(parsed.faxId, {
@@ -2600,9 +2955,49 @@ app.post(["/api/webhooks/telnyx", "/telnyx/webhook"], (req, res) => {
   }
 });
 
-app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
+app.get("/media/:filename", (req, res) => {
+  try {
+    const filename = safeBasename(req.params.filename || "");
+    const exp = req.query.exp;
+    const sig = req.query.sig;
+    if (!filename || !verifySignedMediaAccess({ filename, exp, sig })) {
+      return res.status(403).json({ error: "Invalid or expired media access link." });
+    }
+
+    const filePath = path.join(UPLOADS_DIR, filename);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: "Media file not found." });
+    }
+    return res.sendFile(filePath);
+  } catch (error) {
+    return res.status(400).json({ error: "Could not access media file." });
+  }
 });
+
+app.get("*", (req, res) => {
+  res.sendFile(path.join(PUBLIC_DIR, "index.html"));
+});
+
+function startBackgroundWorkers() {
+  if (!bulkWorkerInterval) {
+    bulkWorkerInterval = setInterval(() => {
+      processQueuedBulkJobs().catch((error) => {
+        console.warn(`Bulk queue worker cycle failed: ${error.message || error}`);
+      });
+    }, BULK_WORKER_POLL_MS);
+  }
+
+  if (!uploadCleanupInterval) {
+    uploadCleanupInterval = setInterval(() => {
+      cleanExpiredUploads();
+    }, Math.min(60 * 60 * 1000, Math.max(5 * 60 * 1000, MEDIA_URL_TTL_SECONDS * 1000)));
+  }
+
+  setTimeout(() => {
+    processQueuedBulkJobs().catch(() => {});
+    cleanExpiredUploads();
+  }, 1000);
+}
 
 async function initializePersistence() {
   ensureDataFiles();
@@ -2610,6 +3005,7 @@ async function initializePersistence() {
     return;
   }
   await bootstrapD1AppStores();
+  await ensureD1SessionsTable();
   await ensureD1UsersTable();
   await syncLocalUsersToD1();
   await ensureD1AdminUser();
@@ -2630,6 +3026,11 @@ initializePersistence()
       } else {
         console.log("Cloudflare D1 app-store sync disabled. Using local JSON app stores.");
       }
+      if (!WEBHOOK_SIGNATURE_REQUIRED) {
+        console.warn(
+          "Telnyx webhook signature verification is disabled. Set TELNYX_WEBHOOK_PUBLIC_KEY and WEBHOOK_SIGNATURE_REQUIRED=true."
+        );
+      }
       if (IS_RENDER_RUNTIME && !DATA_DIR.startsWith(`${RENDER_PERSISTENT_ROOT}/`)) {
         console.warn(
           "Render persistent disk is not configured for DATA_DIR. Users/settings/history will reset after restart/deploy."
@@ -2640,6 +3041,7 @@ initializePersistence()
           "Render free instances can sleep when idle. For always-on inbound fax webhooks, use a non-sleeping plan or external uptime pings."
         );
       }
+      startBackgroundWorkers();
     });
   })
   .catch((error) => {

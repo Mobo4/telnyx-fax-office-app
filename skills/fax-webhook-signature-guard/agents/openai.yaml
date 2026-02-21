@@ -1,0 +1,3 @@
+display_name: Webhook Signature Guard
+short_description: Add Telnyx webhook signature verification and freshness checks.
+default_prompt: Implement secure webhook verification for Telnyx events and wire it to runtime health signals.

@@ -1,0 +1,3 @@
+display_name: Auth Throttle Lockout
+short_description: Add login brute-force protections.
+default_prompt: Implement IP throttling and account lockout for authentication endpoints.

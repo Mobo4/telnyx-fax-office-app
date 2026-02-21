@@ -6,4 +6,5 @@ data/users.json
 data/config.json
 data/contacts.json
 data/bulk_jobs.json
+data/uploads/*
 public/uploads/*
