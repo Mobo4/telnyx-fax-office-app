@@ -2,8 +2,7 @@
 
 ## Version
 - Date: 2026-02-20
-- Scope: Send reliability, confirmation UX, multi-file handling, login page polish, history retention, deployment guidance.
-- Scope: Send reliability, confirmation UX, multi-file handling, login page polish, history retention, auth hardening, deployment guidance.
+- Scope: Send reliability, confirmation UX, multi-file handling, login page polish, history retention, auth hardening, deployment guidance, D1 persistence.
 
 ## Product Goal
 Provide a secure browser-based fax system for Eyecare Care of Orange County with reliable outbound sending, clear confirmation feedback, and admin-controlled settings.
@@ -95,7 +94,7 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Inbound flow must run on non-sleeping service tier to avoid missed/delayed webhook processing.
 - Telnyx inbound email recipient remains enabled as backup.
 - For Render persistence, data should be stored on mounted disk path (default `/var/data/telnyx-fax-office-app`).
-- Alternative persistence path: Cloudflare D1 for user accounts on free/ephemeral hosts.
+- Alternative persistence path: Cloudflare D1 for users, settings, contacts, fax history, and bulk job snapshots on free/ephemeral hosts.
 
 ## Non-Functional Requirements
 - Clear error messages for blocked send conditions.

@@ -41,6 +41,9 @@
 - Added D1 startup bootstrap: users table creation, local-user sync, and admin-user ensure.
 - Updated auth/user routes to use async store wrappers that target D1 when enabled.
 - Added `/api/health` flag `d1_users_enabled` for deployment verification.
+- Added D1 app-store snapshot persistence for `config`, `contacts`, `faxes`, `faxes_archive`, and `bulk_jobs`.
+- Added startup hydration/seed logic for app stores (D1 <-> local JSON sync).
+- Added `/api/health` flag `d1_app_stores_enabled` for app-store persistence verification.
 
 ### Files Changed
 - `/Users/alex/Documents/Projects/Telnyx/server.js`

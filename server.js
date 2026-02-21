@@ -43,8 +43,20 @@ const D1_EMAIL = (process.env.CLOUDFLARE_EMAIL || "").trim();
 const D1_USERS_ENABLED = Boolean(
   D1_ACCOUNT_ID && D1_DATABASE_ID && (D1_API_TOKEN || (D1_API_KEY && D1_EMAIL))
 );
+const D1_APP_STORES_ENABLED = D1_USERS_ENABLED;
+const D1_SYNC_STORE_FILENAMES = new Set([
+  "faxes.json",
+  "faxes_archive.json",
+  "config.json",
+  "contacts.json",
+  "bulk_jobs.json"
+]);
 
 let isBulkProcessorRunning = false;
+let isD1AppStoreHydration = false;
+let d1AppStoresReady = false;
+let d1StoreSyncTimer = null;
+const pendingD1StoreSync = new Map();
 
 const sessionSecret = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
 if (!process.env.SESSION_SECRET) {
@@ -98,6 +110,7 @@ function readJson(filePath, fallback) {
 function writeJson(filePath, value) {
   ensureDataDir();
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2));
+  scheduleD1StoreSnapshot(filePath, value);
 }
 
 function normalizeE164(value) {
@@ -638,6 +651,120 @@ function d1NormalizeUserRow(row) {
     created_at: row.created_at,
     updated_at: row.updated_at
   };
+}
+
+function d1StoreKeyForFile(filePath) {
+  const filename = path.basename(filePath || "");
+  if (!D1_SYNC_STORE_FILENAMES.has(filename)) {
+    return null;
+  }
+  return filename;
+}
+
+async function ensureD1AppStoresTable() {
+  if (!D1_APP_STORES_ENABLED) return;
+  await d1Query(`CREATE TABLE IF NOT EXISTS app_store_snapshots (
+    store_key TEXT PRIMARY KEY,
+    payload TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`);
+}
+
+async function d1ReadStoreSnapshot(storeKey) {
+  if (!D1_APP_STORES_ENABLED || !storeKey) {
+    return null;
+  }
+  const rows = await d1Query(
+    "SELECT store_key, payload, updated_at FROM app_store_snapshots WHERE store_key = ? LIMIT 1",
+    [storeKey]
+  );
+  const row = rows[0];
+  if (!row) {
+    return null;
+  }
+  try {
+    return {
+      store_key: row.store_key,
+      payload: JSON.parse(row.payload || "{}"),
+      updated_at: row.updated_at || null
+    };
+  } catch (error) {
+    return null;
+  }
+}
+
+async function d1UpsertStoreSnapshot({ storeKey, payload }) {
+  if (!D1_APP_STORES_ENABLED || !storeKey) return;
+  await d1Query(
+    `INSERT INTO app_store_snapshots (store_key, payload, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(store_key) DO UPDATE SET
+       payload = excluded.payload,
+       updated_at = excluded.updated_at`,
+    [storeKey, JSON.stringify(payload || {}), new Date().toISOString()]
+  );
+}
+
+async function flushD1StoreSyncQueue() {
+  if (!D1_APP_STORES_ENABLED || !d1AppStoresReady) {
+    return;
+  }
+  const entries = Array.from(pendingD1StoreSync.entries());
+  pendingD1StoreSync.clear();
+  d1StoreSyncTimer = null;
+
+  for (const [storeKey, payload] of entries) {
+    try {
+      await d1UpsertStoreSnapshot({ storeKey, payload });
+    } catch (error) {
+      console.warn(`D1 store sync failed for ${storeKey}: ${error.message || error}`);
+    }
+  }
+}
+
+function scheduleD1StoreSnapshot(filePath, payload) {
+  if (!D1_APP_STORES_ENABLED || !d1AppStoresReady || isD1AppStoreHydration) {
+    return;
+  }
+  const storeKey = d1StoreKeyForFile(filePath);
+  if (!storeKey) {
+    return;
+  }
+  pendingD1StoreSync.set(storeKey, payload);
+  if (d1StoreSyncTimer) {
+    return;
+  }
+  d1StoreSyncTimer = setTimeout(() => {
+    flushD1StoreSyncQueue().catch((error) => {
+      console.warn(`D1 store sync queue failed: ${error.message || error}`);
+    });
+  }, 250);
+}
+
+async function bootstrapD1AppStores() {
+  if (!D1_APP_STORES_ENABLED) return;
+  await ensureD1AppStoresTable();
+
+  const storeFiles = [STORE_FILE, FAX_ARCHIVE_FILE, CONFIG_FILE, CONTACTS_FILE, BULK_JOBS_FILE];
+  for (const storeFile of storeFiles) {
+    const storeKey = d1StoreKeyForFile(storeFile);
+    if (!storeKey) continue;
+
+    const remote = await d1ReadStoreSnapshot(storeKey);
+    if (remote?.payload && typeof remote.payload === "object") {
+      isD1AppStoreHydration = true;
+      try {
+        writeJson(storeFile, remote.payload);
+      } finally {
+        isD1AppStoreHydration = false;
+      }
+      continue;
+    }
+
+    const local = readJson(storeFile, {});
+    await d1UpsertStoreSnapshot({ storeKey, payload: local });
+  }
+  d1AppStoresReady = true;
 }
 
 async function ensureD1UsersTable() {
@@ -1744,6 +1871,7 @@ app.get("/api/health", (req, res) => {
     has_from_number: Boolean(cfg.telnyx_from_number),
     has_fax_application_id: Boolean(cfg.telnyx_fax_application_id),
     d1_users_enabled: D1_USERS_ENABLED,
+    d1_app_stores_enabled: D1_APP_STORES_ENABLED,
     hosting: {
       is_render: IS_RENDER_RUNTIME,
       data_dir: DATA_DIR,
@@ -2481,6 +2609,7 @@ async function initializePersistence() {
   if (!D1_USERS_ENABLED) {
     return;
   }
+  await bootstrapD1AppStores();
   await ensureD1UsersTable();
   await syncLocalUsersToD1();
   await ensureD1AdminUser();
@@ -2495,6 +2624,11 @@ initializePersistence()
         console.log(`Cloudflare D1 users enabled (db: ${D1_DATABASE_ID}).`);
       } else {
         console.log("Cloudflare D1 users disabled. Using local file user store.");
+      }
+      if (D1_APP_STORES_ENABLED) {
+        console.log("Cloudflare D1 app-store sync enabled for config/contacts/faxes.");
+      } else {
+        console.log("Cloudflare D1 app-store sync disabled. Using local JSON app stores.");
       }
       if (IS_RENDER_RUNTIME && !DATA_DIR.startsWith(`${RENDER_PERSISTENT_ROOT}/`)) {
         console.warn(

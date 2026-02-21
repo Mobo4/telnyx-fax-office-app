@@ -56,7 +56,7 @@ Set:
 - SMTP variables (`SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`)
 - Optional: `DATA_DIR` (path for persistent JSON data)
 - Optional: `TELNYX_HTTP_TIMEOUT_MS` (default `5000`)
-- Optional Cloudflare D1 user persistence:
+- Optional Cloudflare D1 persistence (users + settings/contacts/fax history snapshots):
   - `CLOUDFLARE_ACCOUNT_ID`
   - `CLOUDFLARE_D1_DATABASE_ID`
   - either `CLOUDFLARE_API_TOKEN` or (`CLOUDFLARE_API_KEY` + `CLOUDFLARE_EMAIL`)
@@ -159,7 +159,7 @@ This app also accepts:
    - use a non-sleeping Render plan, or
    - configure external keepalive pings to `https://<service>.onrender.com/api/health`
 
-## 8.1 Cloudflare D1 for persistent users (free-friendly)
+## 8.1 Cloudflare D1 for free-friendly persistence
 
 1. Create D1 database (example name): `refract-ing-fax-app`
 2. Add env vars on Render service:
@@ -167,9 +167,11 @@ This app also accepts:
    - `CLOUDFLARE_D1_DATABASE_ID`
    - `CLOUDFLARE_API_KEY` and `CLOUDFLARE_EMAIL` (or `CLOUDFLARE_API_TOKEN`)
 3. Deploy latest commit.
-4. Verify `GET /api/health` returns `"d1_users_enabled": true`.
+4. Verify `GET /api/health` returns:
+   - `"d1_users_enabled": true`
+   - `"d1_app_stores_enabled": true`
 
-When enabled, user accounts are stored in D1 and survive service restarts/deploys even without Render disk.
+When enabled, users plus app store snapshots (settings/contacts/fax history/bulk jobs) survive service restarts/deploys even without Render disk.
 
 ## 9. Contacts, tags, and bulk fax
 

@@ -11,7 +11,7 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 
 ## Core Capabilities
 - Role-based login (`admin`, `user`).
-- Optional Cloudflare D1-backed user persistence (instead of local user JSON).
+- Optional Cloudflare D1-backed persistence for users + app stores.
 - Outbound fax send to one or many recipients.
 - Sent and Received history tabs with file links.
 - Address Book with search, tags, CSV import, frequent contacts.
@@ -81,6 +81,23 @@ Operational reference for architecture, workflow behavior, limits, and known edg
   - either `CLOUDFLARE_API_TOKEN` or (`CLOUDFLARE_API_KEY` + `CLOUDFLARE_EMAIL`)
 - In D1 mode, startup ensures table exists and syncs local users to D1 once.
 - Health endpoint reports `"d1_users_enabled": true|false`.
+
+## App Store Persistence Modes
+- Default: local JSON stores.
+- Optional D1 app-store snapshot mode (same `CLOUDFLARE_*` env vars as user mode).
+- Synced stores:
+  - `config.json`
+  - `contacts.json`
+  - `faxes.json`
+  - `faxes_archive.json`
+  - `bulk_jobs.json`
+- Startup behavior:
+  - if D1 snapshot exists -> hydrate local file from D1
+  - if no D1 snapshot -> seed D1 from local file
+- Runtime behavior:
+  - local file remains primary runtime store
+  - writes are queued and synced to D1 in background
+- Health endpoint reports `"d1_app_stores_enabled": true|false`.
 
 ## Auth/User Persistence Notes
 - User store is normalized on read/write (supports legacy `items` map or array layouts).
