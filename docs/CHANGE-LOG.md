@@ -1,5 +1,22 @@
 # Change Log
 
+## 2026-02-22
+### Completed
+- Added local file-backed session store fallback (`data/sessions_local.json`) when D1 is not enabled.
+- Added `LOCAL_SESSION_STORE_ENABLED` environment flag (default `true`) to control non-D1 session persistence behavior.
+- Added `session_store_mode` to `/api/health` diagnostics.
+- Added startup log output for active session store mode (`d1`, `local file`, or `in-memory`).
+- Updated docs to reflect session persistence fallback behavior and operational mode selection.
+
+### Files Changed
+- `/Users/alex/Documents/Projects/Telnyx/server.js`
+- `/Users/alex/Documents/Projects/Telnyx/.env.example`
+- `/Users/alex/Documents/Projects/Telnyx/README.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/PRD-fax-app-enhancements.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/KNOWLEDGE-BASE.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/CHANGE-LOG.md`
+
 ## 2026-02-20
 ### Completed
 - Removed upload modal and moved upload to inline Send Fax form.

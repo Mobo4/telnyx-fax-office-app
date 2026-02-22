@@ -31,6 +31,7 @@ const USERS_FILE = path.join(DATA_DIR, "users.json");
 const CONFIG_FILE = path.join(DATA_DIR, "config.json");
 const CONTACTS_FILE = path.join(DATA_DIR, "contacts.json");
 const BULK_JOBS_FILE = path.join(DATA_DIR, "bulk_jobs.json");
+const LOCAL_SESSIONS_FILE = path.join(DATA_DIR, "sessions_local.json");
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const MAX_CONTACTS = 3000;
 const MAX_SEND_RECIPIENTS = 100;
@@ -66,6 +67,7 @@ const AUTH_LOCKOUT_THRESHOLD = Math.max(3, Number(process.env.AUTH_LOCKOUT_THRES
 const AUTH_LOCKOUT_MS = Math.max(60_000, Number(process.env.AUTH_LOCKOUT_MS || 15 * 60 * 1000));
 const BULK_WORKER_POLL_MS = Math.max(5_000, Number(process.env.BULK_WORKER_POLL_MS || 15_000));
 const SESSION_MAX_AGE_MS = Math.max(60_000, Number(process.env.SESSION_MAX_AGE_MS || 12 * 60 * 60 * 1000));
+const LOCAL_SESSION_STORE_ENABLED = process.env.LOCAL_SESSION_STORE_ENABLED !== "false";
 const D1_SYNC_STORE_FILENAMES = new Set([
   "faxes.json",
   "faxes_archive.json",
@@ -953,11 +955,141 @@ class D1SessionStore extends session.Store {
   }
 }
 
-function createSessionStore() {
-  if (!D1_USERS_ENABLED) {
-    return undefined;
+function readLocalSessionStore() {
+  return readJson(LOCAL_SESSIONS_FILE, {
+    items: {},
+    updated_at: new Date().toISOString()
+  });
+}
+
+function writeLocalSessionStore(store) {
+  writeJson(LOCAL_SESSIONS_FILE, {
+    items: store?.items || {},
+    updated_at: new Date().toISOString()
+  });
+}
+
+function resolveSessionExpiresAt(sess) {
+  if (sess?.cookie?.expires) {
+    const expiresAt = new Date(sess.cookie.expires).getTime();
+    if (Number.isFinite(expiresAt) && expiresAt > 0) {
+      return expiresAt;
+    }
   }
-  return new D1SessionStore();
+  return Date.now() + SESSION_MAX_AGE_MS;
+}
+
+function purgeExpiredLocalSessions(store) {
+  const safeStore = store && typeof store === "object" ? store : { items: {} };
+  const items = safeStore.items && typeof safeStore.items === "object" ? safeStore.items : {};
+  const now = Date.now();
+  let changed = false;
+  for (const [sid, row] of Object.entries(items)) {
+    const expiresAt = Number(row?.expires_at || 0);
+    if (!expiresAt || expiresAt > now) {
+      continue;
+    }
+    delete items[sid];
+    changed = true;
+  }
+  safeStore.items = items;
+  return { store: safeStore, changed };
+}
+
+class LocalFileSessionStore extends session.Store {
+  get(sid, callback) {
+    try {
+      const purged = purgeExpiredLocalSessions(readLocalSessionStore());
+      if (purged.changed) {
+        writeLocalSessionStore(purged.store);
+      }
+      const row = purged.store.items[sid];
+      if (!row) {
+        callback(null, null);
+        return;
+      }
+      let parsed = null;
+      try {
+        parsed = JSON.parse(row.payload || "{}");
+      } catch (error) {
+        parsed = null;
+      }
+      callback(null, parsed);
+    } catch (error) {
+      callback(error);
+    }
+  }
+
+  set(sid, sess, callback) {
+    try {
+      const store = readLocalSessionStore();
+      const items = store.items && typeof store.items === "object" ? store.items : {};
+      const expiresAt = resolveSessionExpiresAt(sess);
+      items[sid] = {
+        payload: JSON.stringify(sess || {}),
+        expires_at: Math.max(Date.now(), expiresAt),
+        updated_at: Date.now()
+      };
+      store.items = items;
+      writeLocalSessionStore(store);
+      callback(null);
+    } catch (error) {
+      callback(error);
+    }
+  }
+
+  destroy(sid, callback) {
+    try {
+      const store = readLocalSessionStore();
+      const items = store.items && typeof store.items === "object" ? store.items : {};
+      if (items[sid]) {
+        delete items[sid];
+        store.items = items;
+        writeLocalSessionStore(store);
+      }
+      callback(null);
+    } catch (error) {
+      callback(error);
+    }
+  }
+
+  touch(sid, sess, callback) {
+    try {
+      const store = readLocalSessionStore();
+      const items = store.items && typeof store.items === "object" ? store.items : {};
+      const current = items[sid];
+      if (!current) {
+        callback(null);
+        return;
+      }
+      current.expires_at = Math.max(Date.now(), resolveSessionExpiresAt(sess));
+      current.updated_at = Date.now();
+      items[sid] = current;
+      store.items = items;
+      writeLocalSessionStore(store);
+      callback(null);
+    } catch (error) {
+      callback(error);
+    }
+  }
+}
+
+function getSessionStoreMode() {
+  if (D1_USERS_ENABLED) return "d1";
+  if (LOCAL_SESSION_STORE_ENABLED) return "local_file";
+  return "memory";
+}
+
+const SESSION_STORE_MODE = getSessionStoreMode();
+
+function createSessionStore() {
+  if (SESSION_STORE_MODE === "d1") {
+    return new D1SessionStore();
+  }
+  if (SESSION_STORE_MODE === "local_file") {
+    return new LocalFileSessionStore();
+  }
+  return undefined;
 }
 
 app.use(
@@ -2227,7 +2359,8 @@ app.get("/api/health", (req, res) => {
       max_attempts_per_ip: AUTH_RATE_MAX_ATTEMPTS_PER_IP,
       lockout_threshold: AUTH_LOCKOUT_THRESHOLD,
       lockout_ms: AUTH_LOCKOUT_MS
-    }
+    },
+    session_store_mode: SESSION_STORE_MODE
   });
 });
 
@@ -3025,6 +3158,13 @@ initializePersistence()
         console.log("Cloudflare D1 app-store sync enabled for config/contacts/faxes.");
       } else {
         console.log("Cloudflare D1 app-store sync disabled. Using local JSON app stores.");
+      }
+      if (SESSION_STORE_MODE === "d1") {
+        console.log("Session store mode: D1.");
+      } else if (SESSION_STORE_MODE === "local_file") {
+        console.log("Session store mode: local file.");
+      } else {
+        console.log("Session store mode: in-memory (non-persistent).");
       }
       if (!WEBHOOK_SIGNATURE_REQUIRED) {
         console.warn(

@@ -38,6 +38,7 @@
 - [x] Add login IP throttling and account lockout controls.
 - [x] Add background bulk worker interval/startup recovery loop.
 - [x] Add D1-backed session store for durable auth sessions.
+- [x] Add local file-backed session store fallback when D1 is not enabled.
 
 ## Next Tasks
 - [ ] Add automated tests for `/api/faxes` multi-recipient success/failure mixes.

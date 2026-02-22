@@ -38,6 +38,10 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Optional Cloudflare D1 persistence for user accounts when running on ephemeral hosts.
 - Add login throttling per IP and temporary lockouts per username.
 - Add durable session store (D1-backed where configured) for restart-safe auth sessions.
+- Add durable session store with fallback priority:
+  - D1-backed where configured
+  - local file store (`DATA_DIR/sessions_local.json`) when D1 is not configured
+  - in-memory only if local session store is explicitly disabled
 
 ### Send Fax Workflow
 - Recipient input accepts:
@@ -128,7 +132,7 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Media URLs used for faxing are signed and expire.
 - Repeated failed login attempts trigger throttling/lockout responses.
 - Queued bulk jobs are resumed by background worker after restart.
-- Sessions persist across restart when D1 is configured.
+- Sessions persist across restart when D1 is configured or when local file session store is enabled.
 
 ## Gaps Reviewed and Resolved
 - Gap: send failures were not obvious enough.

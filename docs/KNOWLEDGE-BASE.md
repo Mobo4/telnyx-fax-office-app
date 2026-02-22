@@ -112,9 +112,11 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - Health endpoint reports `"d1_app_stores_enabled": true|false`.
 
 ## Session Persistence Modes
-- Default: in-memory session store.
+- Default: local file session store (`data/sessions_local.json`).
 - Optional D1 mode: enabled when `CLOUDFLARE_*` D1 env vars are present.
 - D1 session table: `sessions` with expiration timestamps.
+- Optional in-memory mode only when `LOCAL_SESSION_STORE_ENABLED=false`.
+- Health endpoint reports `session_store_mode` as `d1`, `local_file`, or `memory`.
 
 ## Auth/User Persistence Notes
 - User store is normalized on read/write (supports legacy `items` map or array layouts).

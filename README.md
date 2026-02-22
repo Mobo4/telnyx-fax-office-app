@@ -56,6 +56,7 @@ Set:
 - SMTP variables (`SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`)
 - Optional: `DATA_DIR` (path for persistent JSON data)
 - Optional: `TELNYX_HTTP_TIMEOUT_MS` (default `5000`)
+- Optional: `LOCAL_SESSION_STORE_ENABLED` (default `true`; uses `DATA_DIR/sessions_local.json` when D1 is not enabled)
 - Optional Cloudflare D1 persistence (users + settings/contacts/fax history snapshots):
   - `CLOUDFLARE_ACCOUNT_ID`
   - `CLOUDFLARE_D1_DATABASE_ID`
@@ -189,6 +190,7 @@ Webhook hardening:
    - `"d1_app_stores_enabled": true`
 
 When enabled, users plus app store snapshots (settings/contacts/fax history/bulk jobs) survive service restarts/deploys even without Render disk.
+When D1 is not enabled, login sessions persist to local file storage by default (`DATA_DIR/sessions_local.json`).
 
 ## 9. Contacts, tags, and bulk fax
 
