@@ -87,6 +87,10 @@ h3 {
   margin: 0 auto;
 }
 
+.login-card button {
+  width: 100%;
+}
+
 .login-brand {
   display: flex;
   align-items: center;
@@ -194,6 +198,16 @@ button.secondary {
 
 button.secondary:hover {
   background: #dce8ff;
+}
+
+#google-signin-btn {
+  background: #ffffff;
+  color: #1f3d72;
+  border: 1px solid #bfd2eb;
+}
+
+#google-signin-btn:hover {
+  background: #f1f6ff;
 }
 
 button:disabled {

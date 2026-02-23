@@ -5,6 +5,8 @@ const adminPanel = document.getElementById("admin-panel");
 const loginForm = document.getElementById("login-form");
 const loginMessage = document.getElementById("login-message");
 const tenantInput = document.getElementById("tenant_id");
+const googleSigninBtn = document.getElementById("google-signin-btn");
+const googleLoginHint = document.getElementById("google-login-hint");
 const logoutBtn = document.getElementById("logout-btn");
 const settingsToggleBtn = document.getElementById("settings-toggle-btn");
 const sessionLabel = document.getElementById("session-label");
@@ -72,6 +74,12 @@ const loadFaxAppBtn = document.getElementById("load-fax-app");
 const createUserForm = document.getElementById("create-user-form");
 const usersMessage = document.getElementById("users-message");
 const usersTableBody = document.getElementById("users-table-body");
+const newAuthProviderSelect = document.getElementById("new_auth_provider");
+const newUsernameInput = document.getElementById("new_username");
+const newPasswordWrap = document.getElementById("new_password_wrap");
+const newPasswordInput = document.getElementById("new_password");
+const newGoogleEmailWrap = document.getElementById("new_google_email_wrap");
+const newGoogleEmailInput = document.getElementById("new_google_email");
 const sendConfirmModal = document.getElementById("send-confirm-modal");
 const sendConfirmText = document.getElementById("send-confirm-text");
 const sendConfirmDetails = document.getElementById("send-confirm-details");
@@ -99,6 +107,12 @@ let state = {
   tags: [],
   bulkJobs: [],
   pendingResetAfterSendConfirm: false,
+  googleAuth: {
+    enabled: false,
+    configured: false,
+    tenant_exists: false,
+    tenant_active: false
+  },
   appSettings: {
     outbound_copy_enabled: true,
     outbound_copy_email: "eyecarecenteroc@gmail.com",
@@ -246,6 +260,33 @@ function normalizeTenantId(value) {
   return tenant;
 }
 
+function normalizeAuthProvider(value) {
+  return (value || "").toString().trim().toLowerCase() === "google" ? "google" : "local";
+}
+
+function consumeAuthQueryState() {
+  const params = new URLSearchParams(window.location.search || "");
+  const tenantFromQuery = normalizeTenantId(params.get("tenant_id") || "");
+  if (tenantFromQuery) {
+    state.tenantId = tenantFromQuery;
+    window.localStorage.setItem("fax_app_tenant_id", tenantFromQuery);
+    if (tenantInput) {
+      tenantInput.value = tenantFromQuery;
+    }
+  }
+
+  const authError = (params.get("auth_error") || "").toString().trim();
+  const authSource = (params.get("auth_source") || "").toString().trim().toLowerCase();
+  if (authError) {
+    const prefix = authSource === "google" ? "Google sign-in error: " : "";
+    setMessage(loginMessage, `${prefix}${authError}`);
+  }
+
+  if (params.has("tenant_id") || params.has("auth_error") || params.has("auth_source")) {
+    window.history.replaceState({}, document.title, window.location.pathname || "/");
+  }
+}
+
 async function api(path, options = {}) {
   const headers = new Headers(options.headers || {});
   const tenantId = normalizeTenantId(state.tenantId || tenantInput?.value || "default");
@@ -268,6 +309,93 @@ async function api(path, options = {}) {
 function setMessage(el, text) {
   if (el) {
     el.textContent = text || "";
+  }
+}
+
+function applyGoogleAuthUI() {
+  if (!googleSigninBtn || !googleLoginHint) {
+    return;
+  }
+  const auth = state.googleAuth || {};
+  const featureEnabled = auth.enabled === true;
+  const loginAvailable =
+    featureEnabled &&
+    auth.configured === true &&
+    auth.tenant_exists === true &&
+    auth.tenant_active === true;
+
+  googleSigninBtn.classList.toggle("hidden", !featureEnabled);
+  googleLoginHint.classList.toggle("hidden", !featureEnabled);
+  googleSigninBtn.disabled = !loginAvailable;
+
+  if (!featureEnabled) {
+    googleLoginHint.textContent = "";
+    return;
+  }
+  if (!auth.configured) {
+    googleLoginHint.textContent = "Google sign-in is not configured on this server.";
+    return;
+  }
+  if (!auth.tenant_exists) {
+    googleLoginHint.textContent = "Tenant is not provisioned yet for Google sign-in.";
+    return;
+  }
+  if (!auth.tenant_active) {
+    googleLoginHint.textContent = "Tenant is currently suspended.";
+    return;
+  }
+  googleLoginHint.textContent = "Use your Google account for this tenant workspace.";
+}
+
+async function loadGoogleAuthConfig({ silent = false } = {}) {
+  const tenantId = normalizeTenantId(tenantInput?.value || state.tenantId || "default");
+  state.tenantId = tenantId;
+  window.localStorage.setItem("fax_app_tenant_id", tenantId);
+  try {
+    const body = await api(`/api/auth/google/config?tenant_id=${encodeURIComponent(tenantId)}`);
+    state.googleAuth = body || {};
+    applyGoogleAuthUI();
+    return body;
+  } catch (error) {
+    state.googleAuth = {
+      enabled: false,
+      configured: false,
+      tenant_exists: false,
+      tenant_active: false
+    };
+    applyGoogleAuthUI();
+    if (!silent) {
+      setMessage(loginMessage, error.message);
+    }
+    return null;
+  }
+}
+
+function applyCreateUserProviderUI() {
+  if (!newAuthProviderSelect) return;
+  const provider = normalizeAuthProvider(newAuthProviderSelect.value || "local");
+  const isGoogle = provider === "google";
+
+  if (newPasswordWrap) {
+    newPasswordWrap.classList.toggle("hidden", isGoogle);
+  }
+  if (newGoogleEmailWrap) {
+    newGoogleEmailWrap.classList.toggle("hidden", !isGoogle);
+  }
+  if (newPasswordInput) {
+    newPasswordInput.required = !isGoogle;
+    if (isGoogle) {
+      newPasswordInput.value = "";
+    }
+  }
+  if (newGoogleEmailInput) {
+    newGoogleEmailInput.required = isGoogle;
+  }
+  if (newUsernameInput) {
+    newUsernameInput.required = !isGoogle;
+    newUsernameInput.placeholder = isGoogle
+      ? "optional (auto-generated from Google email)"
+      : "required username";
   }
 }
 
@@ -573,7 +701,9 @@ function setAuthenticatedView(user) {
   appShell.classList.toggle("hidden", !isAuthenticated);
 
   if (isAuthenticated) {
-    sessionLabel.textContent = `Logged in as ${user.username} (${user.role}) on tenant ${state.tenantId}`;
+    const provider = normalizeAuthProvider(user.auth_provider || "local");
+    const providerText = provider === "google" ? "google sign-in" : "local login";
+    sessionLabel.textContent = `Logged in as ${user.username} (${user.role}, ${providerText}) on tenant ${state.tenantId}`;
     mediaUrlInput.value = user.last_media_url || "";
     bulkMediaUrlInput.value = user.last_media_url || "";
     setLastUrlUI(user.last_media_url || "");
@@ -600,6 +730,7 @@ function setAuthenticatedView(user) {
     addressbookModal.classList.add("hidden");
     closeSendConfirmationModal();
     setLastUrlUI("");
+    loadGoogleAuthConfig({ silent: true }).catch(() => {});
   }
   applyAdminPanelVisibility();
 }
@@ -1034,34 +1165,43 @@ async function loadFaxAppSettings() {
 }
 
 function renderUserRow(item) {
-  const tr = document.createElement("tr");
-  tr.innerHTML = `
-    <td>${escapeHtml(item.username)}</td>
-    <td>${escapeHtml(item.role)}</td>
-    <td>${escapeHtml(formatDate(item.created_at))}</td>
-    <td>
+  const provider = normalizeAuthProvider(item.auth_provider || "local");
+  const canResetPassword = provider === "local";
+  const resetCell = canResetPassword
+    ? `
       <form class="inline-reset-form" data-user="${escapeHtml(item.username)}">
         <input type="password" name="password" placeholder="New password" minlength="10" required />
         <button type="submit" class="small-btn secondary">Reset</button>
       </form>
-    </td>
+    `
+    : `<span class="helper-text">Google user</span>`;
+  const tr = document.createElement("tr");
+  tr.innerHTML = `
+    <td>${escapeHtml(item.username)}</td>
+    <td>${escapeHtml(item.role)}</td>
+    <td>${escapeHtml(provider)}</td>
+    <td>${escapeHtml(item.email || "-")}</td>
+    <td>${escapeHtml(formatDate(item.created_at))}</td>
+    <td>${resetCell}</td>
   `;
 
-  tr.querySelector(".inline-reset-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const password = event.target.password.value || "";
-    try {
-      await api(`/api/admin/users/${encodeURIComponent(item.username)}/password`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password })
-      });
-      setMessage(usersMessage, `Password reset for ${item.username}.`);
-      event.target.reset();
-    } catch (error) {
-      setMessage(usersMessage, error.message);
-    }
-  });
+  if (canResetPassword) {
+    tr.querySelector(".inline-reset-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const password = event.target.password.value || "";
+      try {
+        await api(`/api/admin/users/${encodeURIComponent(item.username)}/password`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password })
+        });
+        setMessage(usersMessage, `Password reset for ${item.username}.`);
+        event.target.reset();
+      } catch (error) {
+        setMessage(usersMessage, error.message);
+      }
+    });
+  }
 
   return tr;
 }
@@ -1073,7 +1213,7 @@ async function loadUsers() {
 
   if (!items.length) {
     const tr = document.createElement("tr");
-    tr.innerHTML = `<td colspan="4">No users.</td>`;
+    tr.innerHTML = `<td colspan="6">No users.</td>`;
     usersTableBody.appendChild(tr);
     return;
   }
@@ -1157,6 +1297,42 @@ loginForm.addEventListener("submit", async (event) => {
     setMessage(loginMessage, error.message);
   }
 });
+
+if (tenantInput) {
+  tenantInput.addEventListener("change", () => {
+    state.tenantId = normalizeTenantId(tenantInput.value || state.tenantId || "default");
+    window.localStorage.setItem("fax_app_tenant_id", state.tenantId);
+    loadGoogleAuthConfig({ silent: true }).catch(() => {});
+  });
+}
+
+if (googleSigninBtn) {
+  googleSigninBtn.addEventListener("click", async () => {
+    setMessage(loginMessage, "");
+    const tenantId = normalizeTenantId(tenantInput?.value || state.tenantId || "default");
+    state.tenantId = tenantId;
+    window.localStorage.setItem("fax_app_tenant_id", tenantId);
+
+    const config = await loadGoogleAuthConfig({ silent: true });
+    if (!config?.enabled) {
+      setMessage(loginMessage, "Google sign-in is not enabled for this server.");
+      return;
+    }
+    if (!config?.configured) {
+      setMessage(loginMessage, "Google sign-in is not configured yet.");
+      return;
+    }
+    if (!config?.tenant_exists) {
+      setMessage(loginMessage, "Tenant is not provisioned.");
+      return;
+    }
+    if (!config?.tenant_active) {
+      setMessage(loginMessage, "Tenant is suspended.");
+      return;
+    }
+    window.location.assign(`/api/auth/google/start?tenant_id=${encodeURIComponent(tenantId)}`);
+  });
+}
 
 logoutBtn.addEventListener("click", async () => {
   await api("/api/auth/logout", { method: "POST" }).catch(() => ({}));
@@ -1558,25 +1734,44 @@ createUserForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   setMessage(usersMessage, "");
   const formData = new FormData(createUserForm);
+  const provider = normalizeAuthProvider(formData.get("auth_provider") || "local");
+  const usernameInput = (formData.get("username") || "").toString().trim().toLowerCase();
+  const payload = {
+    role: formData.get("role"),
+    auth_provider: provider
+  };
+
+  if (provider === "google") {
+    payload.google_email = (formData.get("google_email") || "").toString().trim().toLowerCase();
+    if (usernameInput) {
+      payload.username = usernameInput;
+    }
+  } else {
+    payload.username = usernameInput;
+    payload.password = formData.get("password");
+  }
 
   try {
-    const submittedUsername = (formData.get("username") || "").toString().trim().toLowerCase();
-    await api("/api/admin/users", {
+    const created = await api("/api/admin/users", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        username: formData.get("username"),
-        password: formData.get("password"),
-        role: formData.get("role")
-      })
+      body: JSON.stringify(payload)
     });
     createUserForm.reset();
-    setMessage(usersMessage, `User created. Login username: ${submittedUsername}`);
+    applyCreateUserProviderUI();
+    const providerLabel = normalizeAuthProvider(created.auth_provider) === "google" ? "Google" : "local";
+    setMessage(usersMessage, `User created (${providerLabel}). Login username: ${created.username}`);
     await loadUsers();
   } catch (error) {
     setMessage(usersMessage, error.message);
   }
 });
+
+if (newAuthProviderSelect) {
+  newAuthProviderSelect.addEventListener("change", () => {
+    applyCreateUserProviderUI();
+  });
+}
 
 mediaUrlInput.addEventListener("blur", async () => {
   const urls = parseMediaUrls(mediaUrlInput.value || "");
@@ -1608,6 +1803,9 @@ sendFileInput.addEventListener("change", () => {
 });
 
 async function bootstrap() {
+  consumeAuthQueryState();
+  applyCreateUserProviderUI();
+  await loadGoogleAuthConfig({ silent: true });
   try {
     const me = await api("/api/auth/me");
     if (me.authenticated) {

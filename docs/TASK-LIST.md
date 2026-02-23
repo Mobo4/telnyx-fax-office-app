@@ -46,6 +46,11 @@
 - [x] Isolate tenant config persistence to tenant map and remove cross-tenant/global key bleed.
 - [x] Restrict `/api/faxes/:id/refresh` to fax IDs already owned by active tenant.
 - [x] Add free-mode billing toggle (`BILLING_MODE=free`) with payment-ready API contracts preserved.
+- [x] Add optional Google Sign-In button on login page with tenant-aware config checks.
+- [x] Add Google OAuth start/callback routes with state/nonce validation.
+- [x] Support admin creation of Google-provider users by email for shared tenant account access.
+- [x] Keep local login available and restrict password reset to local-provider users.
+- [x] Add Google auth environment/config documentation and implementation PRD.
 
 ## Next Tasks
 - [ ] Execute commercial SaaS program in `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-commercial-saas-hipaa.md`.
@@ -57,3 +62,4 @@
 - [ ] Add Render deployment guide with exact persistent disk + no-sleep plan checklist screenshots.
 - [ ] Add webhook signature replay cache (event-id dedupe) for stronger webhook hardening.
 - [ ] Add at-rest encryption for uploaded files and automated retention-policy reporting.
+- [ ] Add automated integration tests for Google auth callback success/failure flows.

@@ -6,5 +6,10 @@ data/users.json
 data/config.json
 data/contacts.json
 data/bulk_jobs.json
+data/tenants.json
+data/billing.json
+data/audit_events.json
+data/idempotency_keys.json
+data/sessions_local.json
 data/uploads/*
 public/uploads/*

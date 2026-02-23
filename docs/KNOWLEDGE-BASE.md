@@ -4,6 +4,9 @@
 Operational reference for architecture, workflow behavior, limits, and known edge cases so another engineer/AI can continue without re-discovery.
 
 ## Related Planning Docs
+- `/Users/alex/Documents/Projects/Telnyx/docs/PRD-fax-app-enhancements.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/PRD-google-authentication.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST.md`
 - `/Users/alex/Documents/Projects/Telnyx/docs/PRD-security-hardening-wave1.md`
 - `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-security-hardening-wave1.md`
 - `/Users/alex/Documents/Projects/Telnyx/docs/PRD-commercial-saas-hipaa.md`
@@ -20,6 +23,7 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 
 ## Core Capabilities
 - Role-based login (`admin`, `user`).
+- Optional Google OAuth login (`google`) plus local login (`local`).
 - Optional Cloudflare D1-backed persistence for users + app stores.
 - Optional Cloudflare D1-backed session storage.
 - Outbound fax send to one or many recipients.
@@ -39,6 +43,7 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 
 ## API Surface (primary)
 - Auth: `/api/auth/login`, `/api/auth/logout`, `/api/auth/me`
+- Google auth: `/api/auth/google/config`, `/api/auth/google/start`, `/api/auth/google/callback`
 - Send/history: `/api/faxes`, `/api/faxes/:id/refresh`
 - Uploads: `/api/uploads/batch`
 - Contacts: `/api/contacts`, `/api/contacts/import`, `/api/contacts/tags`, `/api/contacts/frequent`
@@ -160,6 +165,9 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - User store is normalized on read/write (supports legacy `items` map or array layouts).
 - If no admin exists, bootstrap admin is re-created automatically.
 - Legacy plaintext user passwords (if present from old builds) are accepted once, then auto-migrated to bcrypt hash on login.
+- User records now carry `auth_provider`, `email`, and optional `google_sub` for identity linking.
+- Password resets are limited to `local` users; Google-provider users authenticate through OAuth.
+- Google user lookup is tenant-scoped and matches by `google_sub`, email, or generated username.
 
 ## History Retention Behavior
 - `/api/faxes` returns most-recent rows (default `50`, max `100`) and syncs latest records from Telnyx before responding.

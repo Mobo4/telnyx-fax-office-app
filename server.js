@@ -102,6 +102,24 @@ const AUTH_LOCKOUT_MS = Math.max(60_000, Number(process.env.AUTH_LOCKOUT_MS || 1
 const BULK_WORKER_POLL_MS = Math.max(5_000, Number(process.env.BULK_WORKER_POLL_MS || 15_000));
 const SESSION_MAX_AGE_MS = Math.max(60_000, Number(process.env.SESSION_MAX_AGE_MS || 12 * 60 * 60 * 1000));
 const LOCAL_SESSION_STORE_ENABLED = process.env.LOCAL_SESSION_STORE_ENABLED !== "false";
+const GOOGLE_AUTH_ENABLED = process.env.GOOGLE_AUTH_ENABLED === "true";
+const GOOGLE_CLIENT_ID = (process.env.GOOGLE_CLIENT_ID || "").trim();
+const GOOGLE_CLIENT_SECRET = (process.env.GOOGLE_CLIENT_SECRET || "").trim();
+const GOOGLE_REDIRECT_URI = (process.env.GOOGLE_REDIRECT_URI || "").trim();
+const GOOGLE_AUTH_AUTO_CREATE_USERS = process.env.GOOGLE_AUTH_AUTO_CREATE_USERS !== "false";
+const GOOGLE_AUTH_DEFAULT_ROLE = process.env.GOOGLE_AUTH_DEFAULT_ROLE === "admin" ? "admin" : "user";
+const GOOGLE_OAUTH_STATE_MAX_AGE_MS = Math.max(
+  60_000,
+  Number(process.env.GOOGLE_OAUTH_STATE_MAX_AGE_MS || 10 * 60 * 1000)
+);
+const GOOGLE_AUTH_ALLOWED_DOMAINS = Array.from(
+  new Set(
+    (process.env.GOOGLE_AUTH_ALLOWED_DOMAINS || "")
+      .split(",")
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean)
+  )
+);
 const D1_SYNC_STORE_FILENAMES = new Set([
   "faxes.json",
   "faxes_archive.json",
@@ -255,6 +273,99 @@ function normalizeTenantId(value) {
     return DEFAULT_TENANT_ID;
   }
   return tenant;
+}
+
+function normalizeAuthProvider(value) {
+  return (value || "").toString().trim().toLowerCase() === "google" ? "google" : "local";
+}
+
+function isGoogleAuthConfigured() {
+  return GOOGLE_AUTH_ENABLED && Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
+}
+
+function getGoogleRedirectUri(req) {
+  if (GOOGLE_REDIRECT_URI) {
+    return GOOGLE_REDIRECT_URI;
+  }
+  return `${req.protocol}://${req.get("host")}/api/auth/google/callback`;
+}
+
+function isGoogleEmailAllowed(email) {
+  if (!GOOGLE_AUTH_ALLOWED_DOMAINS.length) {
+    return true;
+  }
+  const normalized = (email || "").toString().trim().toLowerCase();
+  const at = normalized.lastIndexOf("@");
+  if (at < 0) {
+    return false;
+  }
+  const domain = normalized.slice(at + 1);
+  return GOOGLE_AUTH_ALLOWED_DOMAINS.includes(domain);
+}
+
+function buildGoogleUsernameFromEmail(email) {
+  const normalizedEmail = (email || "").toString().trim().toLowerCase();
+  const compact = normalizedEmail
+    .replace(/[^a-z0-9._-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const base = compact || "google_user";
+  return normalizeUsername(`g_${base}`).slice(0, 64);
+}
+
+function decodeJwtPayload(token) {
+  const parts = (token || "").toString().split(".");
+  if (parts.length !== 3) {
+    return null;
+  }
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    return payload && typeof payload === "object" ? payload : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function buildAuthRedirectUrl({ tenantId = DEFAULT_TENANT_ID, error = "", source = "" } = {}) {
+  const params = new URLSearchParams();
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  if (normalizedTenantId) {
+    params.set("tenant_id", normalizedTenantId);
+  }
+  if (error) {
+    params.set("auth_error", (error || "").toString().slice(0, 240));
+  }
+  if (source) {
+    params.set("auth_source", (source || "").toString().slice(0, 40));
+  }
+  const query = params.toString();
+  return query ? `/?${query}` : "/";
+}
+
+function redirectToLoginWithAuthError(res, { tenantId, message } = {}) {
+  return res.redirect(
+    buildAuthRedirectUrl({
+      tenantId,
+      error: message || "Authentication failed.",
+      source: "google"
+    })
+  );
+}
+
+function redirectToAppAfterAuth(res, { tenantId } = {}) {
+  return res.redirect(buildAuthRedirectUrl({ tenantId, source: "google" }));
+}
+
+function saveSession(req) {
+  return new Promise((resolve, reject) => {
+    req.session.save((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
 }
 
 function getTenantIdFromRequest(req) {
@@ -435,6 +546,77 @@ function getAuthProtectionStatus({ ip, username }) {
     };
   }
   return { blocked: false };
+}
+
+async function exchangeGoogleAuthorizationCode({ code, redirectUri }) {
+  const body = new URLSearchParams({
+    code: (code || "").toString(),
+    client_id: GOOGLE_CLIENT_ID,
+    client_secret: GOOGLE_CLIENT_SECRET,
+    redirect_uri: redirectUri,
+    grant_type: "authorization_code"
+  });
+  const response = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString()
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = payload?.error_description || payload?.error || "Google token exchange failed.";
+    throw new Error(detail);
+  }
+  return payload;
+}
+
+async function verifyGoogleIdToken({ idToken, expectedNonce }) {
+  const jwtPayload = decodeJwtPayload(idToken);
+  if (!jwtPayload) {
+    throw new Error("Invalid Google ID token.");
+  }
+  if (expectedNonce && jwtPayload.nonce !== expectedNonce) {
+    throw new Error("Invalid Google login nonce.");
+  }
+
+  const verifyUrl = `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`;
+  const response = await fetch(verifyUrl);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.error_description || payload?.error) {
+    throw new Error(payload?.error_description || payload?.error || "Google ID token verification failed.");
+  }
+
+  const audience = (payload.aud || "").toString();
+  const issuer = (payload.iss || "").toString();
+  const email = (payload.email || jwtPayload.email || "").toString().trim().toLowerCase();
+  const emailVerifiedRaw = payload.email_verified ?? jwtPayload.email_verified;
+  const emailVerified = emailVerifiedRaw === true || emailVerifiedRaw === "true";
+  const sub = (payload.sub || jwtPayload.sub || "").toString();
+  const exp = Number(payload.exp || jwtPayload.exp || 0);
+  const nowSec = Math.floor(Date.now() / 1000);
+
+  if (audience !== GOOGLE_CLIENT_ID) {
+    throw new Error("Google token audience mismatch.");
+  }
+  if (!["accounts.google.com", "https://accounts.google.com"].includes(issuer)) {
+    throw new Error("Google token issuer mismatch.");
+  }
+  if (!exp || exp <= nowSec) {
+    throw new Error("Google ID token has expired.");
+  }
+  if (!sub || !email || !emailVerified) {
+    throw new Error("Google account email is not verified.");
+  }
+  if (!isGoogleEmailAllowed(email)) {
+    throw new Error("Google account domain is not allowed for this workspace.");
+  }
+
+  return {
+    sub,
+    email,
+    given_name: (payload.given_name || jwtPayload.given_name || "").toString(),
+    family_name: (payload.family_name || jwtPayload.family_name || "").toString(),
+    name: (payload.name || jwtPayload.name || "").toString()
+  };
 }
 
 function verifyTelnyxWebhookSignature(req) {
@@ -618,16 +800,19 @@ function ensureDataFiles() {
 
     writeJson(USERS_FILE, {
       updated_at: now,
-      items: [
-        {
-          id: crypto.randomUUID(),
-          tenant_id: DEFAULT_TENANT_ID,
-          username: adminUsername,
-          role: "admin",
-          password_hash: bcrypt.hashSync(adminPassword, 12),
-          mfa_enabled: false,
-          mfa_secret: "",
-          last_media_url: "",
+        items: [
+          {
+            id: crypto.randomUUID(),
+            tenant_id: DEFAULT_TENANT_ID,
+            username: adminUsername,
+            role: "admin",
+            auth_provider: "local",
+            email: "",
+            google_sub: "",
+            password_hash: bcrypt.hashSync(adminPassword, 12),
+            mfa_enabled: false,
+            mfa_secret: "",
+            last_media_url: "",
           created_at: now,
           updated_at: now
         }
@@ -954,6 +1139,9 @@ function normalizeUsersStore(rawUsers) {
       tenant_id: normalizeTenantId(item.tenant_id),
       username: normalizeUsername(item.username),
       role: item.role === "admin" ? "admin" : "user",
+      auth_provider: normalizeAuthProvider(item.auth_provider),
+      email: (item.email || "").toString().trim().toLowerCase(),
+      google_sub: (item.google_sub || "").toString().trim(),
       mfa_enabled: item.mfa_enabled === true,
       mfa_secret: (item.mfa_secret || "").toString(),
       last_media_url: item.last_media_url || ""
@@ -983,6 +1171,9 @@ function ensureAdminAccount(usersStore) {
     tenant_id: DEFAULT_TENANT_ID,
     username: adminUsername,
     role: "admin",
+    auth_provider: "local",
+    email: "",
+    google_sub: "",
     password_hash: bcrypt.hashSync(adminPassword, 12),
     mfa_enabled: false,
     mfa_secret: "",
@@ -1180,6 +1371,8 @@ function sanitizeUser(user) {
     tenant_id: normalizeTenantId(user.tenant_id),
     username: user.username,
     role: user.role,
+    auth_provider: normalizeAuthProvider(user.auth_provider),
+    email: (user.email || "").toString().trim().toLowerCase(),
     mfa_enabled: user.mfa_enabled === true,
     last_media_url: user.last_media_url || "",
     created_at: user.created_at,
@@ -1197,6 +1390,117 @@ function getUserByUsername(username, tenantId = DEFAULT_TENANT_ID) {
         normalizeTenantId(item.tenant_id) === normalizedTenantId
     ) || null
   );
+}
+
+function getGoogleUserByIdentity({ email = "", sub = "", username = "", tenantId = DEFAULT_TENANT_ID }) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const normalizedEmail = (email || "").toString().trim().toLowerCase();
+  const normalizedSub = (sub || "").toString().trim();
+  const normalizedUsername = normalizeUsername(username);
+  if (!normalizedEmail && !normalizedSub && !normalizedUsername) {
+    return null;
+  }
+  const users = readUsers();
+  return (
+    users.items.find((item) => {
+      if (normalizeTenantId(item.tenant_id) !== normalizedTenantId) {
+        return false;
+      }
+      if (normalizeAuthProvider(item.auth_provider) !== "google") {
+        return false;
+      }
+      if (normalizedSub && item.google_sub && item.google_sub === normalizedSub) {
+        return true;
+      }
+      if (normalizedEmail && item.email && item.email === normalizedEmail) {
+        return true;
+      }
+      return Boolean(normalizedUsername && item.username === normalizedUsername);
+    }) || null
+  );
+}
+
+function syncGoogleUserIdentity({ username, email = "", sub = "", tenantId = DEFAULT_TENANT_ID }) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const normalizedUsername = normalizeUsername(username);
+  const users = readUsers();
+  const index = users.items.findIndex(
+    (item) =>
+      item.username === normalizedUsername &&
+      normalizeTenantId(item.tenant_id) === normalizedTenantId
+  );
+  if (index < 0) {
+    throw new Error("User not found.");
+  }
+  const existing = users.items[index];
+  const now = new Date().toISOString();
+  users.items[index] = {
+    ...existing,
+    auth_provider: "google",
+    email: (email || existing.email || "").toString().trim().toLowerCase(),
+    google_sub: (sub || existing.google_sub || "").toString().trim(),
+    updated_at: now
+  };
+  users.updated_at = now;
+  writeUsers(users);
+  return sanitizeUser(users.items[index]);
+}
+
+function createSsoUser({
+  username,
+  role = GOOGLE_AUTH_DEFAULT_ROLE,
+  provider = "google",
+  email = "",
+  googleSub = "",
+  tenantId = DEFAULT_TENANT_ID
+}) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const normalizedUsername = normalizeUsername(username);
+  const normalizedProvider = normalizeAuthProvider(provider);
+  if (!/^[a-z0-9._-]{3,64}$/.test(normalizedUsername)) {
+    throw new Error("SSO username is invalid.");
+  }
+  if (!["admin", "user"].includes(role)) {
+    throw new Error("Role must be admin or user.");
+  }
+
+  const users = readUsers();
+  const tenantUserCount = users.items.filter(
+    (item) => normalizeTenantId(item.tenant_id) === normalizedTenantId
+  ).length;
+  const maxUsers = getTenantPlanLimits(normalizedTenantId).max_users;
+  if (COMMERCIAL_ENFORCEMENTS_ENABLED && tenantUserCount >= maxUsers) {
+    throw new Error(`User limit reached for current plan (${maxUsers}).`);
+  }
+  const exists = users.items.some(
+    (item) =>
+      item.username === normalizedUsername &&
+      normalizeTenantId(item.tenant_id) === normalizedTenantId
+  );
+  if (exists) {
+    throw new Error("Username already exists.");
+  }
+
+  const now = new Date().toISOString();
+  const user = {
+    id: crypto.randomUUID(),
+    tenant_id: normalizedTenantId,
+    username: normalizedUsername,
+    role,
+    auth_provider: normalizedProvider,
+    email: (email || "").toString().trim().toLowerCase(),
+    google_sub: (googleSub || "").toString().trim(),
+    password_hash: "",
+    mfa_enabled: false,
+    mfa_secret: "",
+    last_media_url: "",
+    created_at: now,
+    updated_at: now
+  };
+  users.items.push(user);
+  users.updated_at = now;
+  writeUsers(users);
+  return sanitizeUser(user);
 }
 
 function verifyUserPassword(user, password) {
@@ -1255,6 +1559,9 @@ function createUser({ username, password, role, tenantId = DEFAULT_TENANT_ID }) 
     tenant_id: normalizedTenantId,
     username: normalizedUsername,
     role,
+    auth_provider: "local",
+    email: "",
+    google_sub: "",
     password_hash: bcrypt.hashSync(password, 12),
     mfa_enabled: false,
     mfa_secret: "",
@@ -1283,6 +1590,9 @@ function updateUserPassword({ username, password, tenantId = DEFAULT_TENANT_ID }
   );
   if (index < 0) {
     throw new Error("User not found.");
+  }
+  if (normalizeAuthProvider(users.items[index].auth_provider) !== "local") {
+    throw new Error("Password reset is only available for local-login users.");
   }
 
   users.items[index] = {
@@ -1633,6 +1943,9 @@ function d1NormalizeUserRow(row) {
     id: row.id,
     username: normalizeUsername(row.username),
     role: row.role === "admin" ? "admin" : "user",
+    auth_provider: normalizeAuthProvider(row.auth_provider),
+    email: (row.email || "").toString().trim().toLowerCase(),
+    google_sub: (row.google_sub || "").toString().trim(),
     password_hash: row.password_hash || "",
     mfa_enabled: false,
     mfa_secret: "",
@@ -1763,10 +2076,27 @@ async function ensureD1UsersTable() {
     username TEXT UNIQUE NOT NULL,
     role TEXT NOT NULL,
     password_hash TEXT,
+    auth_provider TEXT NOT NULL DEFAULT 'local',
+    email TEXT DEFAULT '',
+    google_sub TEXT DEFAULT '',
     last_media_url TEXT,
     created_at TEXT,
     updated_at TEXT
   )`);
+  const tableInfo = await d1Query("PRAGMA table_info(users)");
+  const columns = new Set(tableInfo.map((row) => String(row.name || "").toLowerCase()));
+  if (!columns.has("auth_provider")) {
+    await d1Query("ALTER TABLE users ADD COLUMN auth_provider TEXT NOT NULL DEFAULT 'local'");
+  }
+  if (!columns.has("email")) {
+    await d1Query("ALTER TABLE users ADD COLUMN email TEXT DEFAULT ''");
+  }
+  if (!columns.has("google_sub")) {
+    await d1Query("ALTER TABLE users ADD COLUMN google_sub TEXT DEFAULT ''");
+  }
+  await d1Query("CREATE INDEX IF NOT EXISTS idx_users_auth_provider ON users(auth_provider)");
+  await d1Query("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)");
+  await d1Query("CREATE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub)");
 }
 
 async function getUserByUsernameStore(username, tenantId = DEFAULT_TENANT_ID) {
@@ -1797,7 +2127,7 @@ async function listUsersSafeStore(tenantId = DEFAULT_TENANT_ID) {
     throw new Error("Tenant-scoped users with D1 are not enabled for this build.");
   }
   const rows = await d1Query(
-    "SELECT id, username, role, last_media_url, created_at, updated_at FROM users ORDER BY created_at DESC"
+    "SELECT id, username, role, auth_provider, email, google_sub, last_media_url, created_at, updated_at FROM users ORDER BY created_at DESC"
   );
   return rows.map((row) => sanitizeUser({ ...d1NormalizeUserRow(row), tenant_id: DEFAULT_TENANT_ID }));
 }
@@ -1839,6 +2169,9 @@ async function createUserStore({ username, password, role, tenantId = DEFAULT_TE
     tenant_id: DEFAULT_TENANT_ID,
     username: normalizedUsername,
     role,
+    auth_provider: "local",
+    email: "",
+    google_sub: "",
     password_hash: bcrypt.hashSync(password, 12),
     last_media_url: "",
     created_at: now,
@@ -1846,10 +2179,214 @@ async function createUserStore({ username, password, role, tenantId = DEFAULT_TE
   };
 
   await d1Query(
-    "INSERT INTO users (id, username, role, password_hash, last_media_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    [user.id, user.username, user.role, user.password_hash, user.last_media_url, user.created_at, user.updated_at]
+    "INSERT INTO users (id, username, role, password_hash, auth_provider, email, google_sub, last_media_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [
+      user.id,
+      user.username,
+      user.role,
+      user.password_hash,
+      user.auth_provider,
+      user.email,
+      user.google_sub,
+      user.last_media_url,
+      user.created_at,
+      user.updated_at
+    ]
   );
   return sanitizeUser(user);
+}
+
+async function createSsoUserStore({
+  username,
+  role = GOOGLE_AUTH_DEFAULT_ROLE,
+  provider = "google",
+  email = "",
+  googleSub = "",
+  tenantId = DEFAULT_TENANT_ID
+}) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  if (!D1_USERS_ENABLED) {
+    return createSsoUser({
+      username,
+      role,
+      provider,
+      email,
+      googleSub,
+      tenantId: normalizedTenantId
+    });
+  }
+  if (normalizedTenantId !== DEFAULT_TENANT_ID) {
+    throw new Error("Tenant-scoped users with D1 are not enabled for this build.");
+  }
+
+  const normalizedUsername = normalizeUsername(username);
+  const normalizedProvider = normalizeAuthProvider(provider);
+  if (!/^[a-z0-9._-]{3,64}$/.test(normalizedUsername)) {
+    throw new Error("SSO username is invalid.");
+  }
+  if (!["admin", "user"].includes(role)) {
+    throw new Error("Role must be admin or user.");
+  }
+
+  const maxUsers = getTenantPlanLimits(DEFAULT_TENANT_ID).max_users;
+  const countRows = await d1Query("SELECT COUNT(1) AS count FROM users");
+  const totalUsers = Number(countRows[0]?.count || 0);
+  if (COMMERCIAL_ENFORCEMENTS_ENABLED && totalUsers >= maxUsers) {
+    throw new Error(`User limit reached for current plan (${maxUsers}).`);
+  }
+
+  const existing = await d1Query("SELECT id FROM users WHERE username = ? LIMIT 1", [normalizedUsername]);
+  if (existing.length) {
+    throw new Error("Username already exists.");
+  }
+
+  const now = new Date().toISOString();
+  const user = {
+    id: crypto.randomUUID(),
+    tenant_id: DEFAULT_TENANT_ID,
+    username: normalizedUsername,
+    role,
+    auth_provider: normalizedProvider,
+    email: (email || "").toString().trim().toLowerCase(),
+    google_sub: (googleSub || "").toString().trim(),
+    password_hash: "",
+    last_media_url: "",
+    created_at: now,
+    updated_at: now
+  };
+  await d1Query(
+    "INSERT INTO users (id, username, role, password_hash, auth_provider, email, google_sub, last_media_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    [
+      user.id,
+      user.username,
+      user.role,
+      user.password_hash,
+      user.auth_provider,
+      user.email,
+      user.google_sub,
+      user.last_media_url,
+      user.created_at,
+      user.updated_at
+    ]
+  );
+  return sanitizeUser(user);
+}
+
+async function getGoogleUserByIdentityStore({
+  email = "",
+  sub = "",
+  username = "",
+  tenantId = DEFAULT_TENANT_ID
+}) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const normalizedEmail = (email || "").toString().trim().toLowerCase();
+  const normalizedSub = (sub || "").toString().trim();
+  const normalizedUsername = normalizeUsername(username);
+  if (!D1_USERS_ENABLED) {
+    return getGoogleUserByIdentity({
+      email: normalizedEmail,
+      sub: normalizedSub,
+      username: normalizedUsername,
+      tenantId: normalizedTenantId
+    });
+  }
+  if (normalizedTenantId !== DEFAULT_TENANT_ID) {
+    throw new Error("Tenant-scoped users with D1 are not enabled for this build.");
+  }
+  if (!normalizedEmail && !normalizedSub && !normalizedUsername) {
+    return null;
+  }
+  const subProbe = normalizedSub || "__none__";
+  const emailProbe = normalizedEmail || "__none__";
+  const usernameProbe = normalizedUsername || "__none__";
+  const rows = await d1Query(
+    `SELECT * FROM users
+     WHERE auth_provider = 'google' AND (
+       google_sub = ? OR lower(email) = ? OR username = ?
+     )
+     LIMIT 1`,
+    [subProbe, emailProbe, usernameProbe]
+  );
+  const user = d1NormalizeUserRow(rows[0] || null);
+  if (!user) {
+    return null;
+  }
+  return {
+    ...user,
+    tenant_id: DEFAULT_TENANT_ID
+  };
+}
+
+async function syncGoogleUserIdentityStore({
+  username,
+  email = "",
+  sub = "",
+  tenantId = DEFAULT_TENANT_ID
+}) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  if (!D1_USERS_ENABLED) {
+    return syncGoogleUserIdentity({
+      username,
+      email,
+      sub,
+      tenantId: normalizedTenantId
+    });
+  }
+  if (normalizedTenantId !== DEFAULT_TENANT_ID) {
+    throw new Error("Tenant-scoped users with D1 are not enabled for this build.");
+  }
+  const normalizedUsername = normalizeUsername(username);
+  const existingRows = await d1Query("SELECT * FROM users WHERE username = ? LIMIT 1", [normalizedUsername]);
+  const existing = d1NormalizeUserRow(existingRows[0] || null);
+  if (!existing) {
+    throw new Error("User not found.");
+  }
+  const now = new Date().toISOString();
+  const normalizedEmail = (email || existing.email || "").toString().trim().toLowerCase();
+  const normalizedSub = (sub || existing.google_sub || "").toString().trim();
+  await d1Query(
+    "UPDATE users SET auth_provider = ?, email = ?, google_sub = ?, updated_at = ? WHERE username = ?",
+    ["google", normalizedEmail, normalizedSub, now, normalizedUsername]
+  );
+  return sanitizeUser({
+    ...existing,
+    tenant_id: DEFAULT_TENANT_ID,
+    auth_provider: "google",
+    email: normalizedEmail,
+    google_sub: normalizedSub,
+    updated_at: now
+  });
+}
+
+async function createGoogleUserWithUniqueUsernameStore({
+  tenantId = DEFAULT_TENANT_ID,
+  email,
+  googleSub = "",
+  role = GOOGLE_AUTH_DEFAULT_ROLE
+}) {
+  const base = buildGoogleUsernameFromEmail(email);
+  for (let i = 0; i < 100; i += 1) {
+    const suffix = i === 0 ? "" : `_${i + 1}`;
+    const maxBaseLength = Math.max(1, 64 - suffix.length);
+    const candidate = `${base.slice(0, maxBaseLength)}${suffix}`;
+    try {
+      return await createSsoUserStore({
+        username: candidate,
+        role,
+        provider: "google",
+        email,
+        googleSub,
+        tenantId
+      });
+    } catch (error) {
+      const message = (error?.message || "").toLowerCase();
+      if (message.includes("username already exists")) {
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new Error("Could not generate unique Google username.");
 }
 
 async function updateUserPasswordStore({ username, password, tenantId = DEFAULT_TENANT_ID }) {
@@ -1869,6 +2406,9 @@ async function updateUserPasswordStore({ username, password, tenantId = DEFAULT_
   const existing = d1NormalizeUserRow(existingRows[0] || null);
   if (!existing) {
     throw new Error("User not found.");
+  }
+  if (normalizeAuthProvider(existing.auth_provider) !== "local") {
+    throw new Error("Password reset is only available for local-login users.");
   }
 
   const now = new Date().toISOString();
@@ -1938,12 +2478,15 @@ async function ensureD1AdminUser() {
   const adminPassword = process.env.ADMIN_PASSWORD || generatedPassword;
   const now = new Date().toISOString();
   await d1Query(
-    "INSERT INTO users (id, username, role, password_hash, last_media_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    "INSERT INTO users (id, username, role, password_hash, auth_provider, email, google_sub, last_media_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     [
       crypto.randomUUID(),
       adminUsername,
       "admin",
       bcrypt.hashSync(adminPassword, 12),
+      "local",
+      "",
+      "",
       "",
       now,
       now
@@ -1981,12 +2524,15 @@ async function syncLocalUsersToD1() {
         ? bcrypt.hashSync(localUser.password, 12)
         : "");
     await d1Query(
-      "INSERT INTO users (id, username, role, password_hash, last_media_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO users (id, username, role, password_hash, auth_provider, email, google_sub, last_media_url, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         localUser.id || crypto.randomUUID(),
         username,
         localUser.role === "admin" ? "admin" : "user",
         passwordHash,
+        normalizeAuthProvider(localUser.auth_provider),
+        (localUser.email || "").toString().trim().toLowerCase(),
+        (localUser.google_sub || "").toString().trim(),
         localUser.last_media_url || "",
         localUser.created_at || new Date().toISOString(),
         localUser.updated_at || new Date().toISOString()
@@ -2879,6 +3425,9 @@ app.use("/api", (req, res, next) => {
     "/auth/login",
     "/auth/logout",
     "/auth/me",
+    "/auth/google/config",
+    "/auth/google/start",
+    "/auth/google/callback",
     "/webhooks/telnyx"
   ]);
   if (openRoutes.has(req.path)) {
@@ -2924,6 +3473,20 @@ app.post("/api/auth/login", async (req, res) => {
       return res.status(protectionStatus.status || 429).json({ error: protectionStatus.error });
     }
     const user = await getUserByUsernameStore(username, tenantId);
+    if (user && normalizeAuthProvider(user.auth_provider) !== "local") {
+      registerFailedAuthAttempt({ ip: clientIp, username });
+      appendAuditEvent({
+        tenantId,
+        actorUsername: username || "unknown",
+        actorRole: "anonymous",
+        action: "auth.login.failed",
+        targetType: "user",
+        targetId: user.id || "",
+        ipAddress: clientIp,
+        metadata: { reason: "provider_google" }
+      });
+      return res.status(401).json({ error: "Use Google Sign-In for this user account." });
+    }
 
     if (!user || !verifyUserPassword(user, password)) {
       registerFailedAuthAttempt({ ip: clientIp, username });
@@ -2994,6 +3557,201 @@ app.get("/api/auth/me", (req, res) => {
     return res.json({ authenticated: false, tenant_mismatch: true });
   }
   return res.json({ authenticated: true, user: req.session.user });
+});
+
+app.get("/api/auth/google/config", (req, res) => {
+  const tenantId = normalizeTenantId(req.tenant_id);
+  const tenant = getTenantById(tenantId);
+  return res.json({
+    enabled: GOOGLE_AUTH_ENABLED,
+    configured: isGoogleAuthConfigured(),
+    tenant_id: tenantId,
+    tenant_exists: Boolean(tenant),
+    tenant_active: tenant ? tenant.active !== false : false,
+    auto_create_users: GOOGLE_AUTH_AUTO_CREATE_USERS,
+    allowed_domains: GOOGLE_AUTH_ALLOWED_DOMAINS,
+    redirect_uri: getGoogleRedirectUri(req)
+  });
+});
+
+app.get("/api/auth/google/start", async (req, res) => {
+  const tenantId = normalizeTenantId(req.tenant_id);
+  const clientIp = getAuthClientIp(req);
+  try {
+    if (!isGoogleAuthConfigured()) {
+      throw new Error("Google sign-in is not configured.");
+    }
+    const tenant = getTenantById(tenantId);
+    if (!tenant) {
+      throw new Error("Tenant is not provisioned.");
+    }
+    if (tenant.active === false) {
+      throw new Error("Tenant is suspended.");
+    }
+
+    const stateValue = crypto.randomBytes(24).toString("base64url");
+    const nonceValue = crypto.randomBytes(24).toString("base64url");
+    const redirectUri = getGoogleRedirectUri(req);
+    req.session.google_oauth = {
+      tenant_id: tenantId,
+      state: stateValue,
+      nonce: nonceValue,
+      created_at: Date.now()
+    };
+    await saveSession(req);
+
+    const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+    authUrl.searchParams.set("client_id", GOOGLE_CLIENT_ID);
+    authUrl.searchParams.set("redirect_uri", redirectUri);
+    authUrl.searchParams.set("response_type", "code");
+    authUrl.searchParams.set("scope", "openid email profile");
+    authUrl.searchParams.set("state", stateValue);
+    authUrl.searchParams.set("nonce", nonceValue);
+    authUrl.searchParams.set("prompt", "select_account");
+    authUrl.searchParams.set("access_type", "offline");
+
+    return res.redirect(authUrl.toString());
+  } catch (error) {
+    appendAuditEvent({
+      tenantId,
+      actorUsername: "unknown",
+      actorRole: "anonymous",
+      action: "auth.google.start_failed",
+      targetType: "user",
+      targetId: "",
+      ipAddress: clientIp,
+      metadata: { reason: error.message || "unknown" }
+    });
+    return redirectToLoginWithAuthError(res, { tenantId, message: error.message || "Google sign-in failed." });
+  }
+});
+
+app.get("/api/auth/google/callback", async (req, res) => {
+  const tenantHint = normalizeTenantId(req.session?.google_oauth?.tenant_id || req.query.tenant_id || req.tenant_id);
+  const clientIp = getAuthClientIp(req);
+  try {
+    if (!isGoogleAuthConfigured()) {
+      throw new Error("Google sign-in is not configured.");
+    }
+    const oauthState = req.session?.google_oauth || null;
+    const stateValue = (req.query.state || "").toString();
+    const code = (req.query.code || "").toString();
+    const providerError = (req.query.error_description || req.query.error || "").toString().trim();
+    if (providerError) {
+      throw new Error(`Google sign-in was not completed (${providerError}).`);
+    }
+    if (!oauthState || !oauthState.state || !oauthState.nonce) {
+      throw new Error("Google sign-in session expired. Please try again.");
+    }
+    if (!stateValue || stateValue !== oauthState.state) {
+      throw new Error("Google sign-in state did not match. Please try again.");
+    }
+    if (!code) {
+      throw new Error("Google sign-in did not return an authorization code.");
+    }
+    if (Date.now() - Number(oauthState.created_at || 0) > GOOGLE_OAUTH_STATE_MAX_AGE_MS) {
+      throw new Error("Google sign-in request expired. Please try again.");
+    }
+
+    const tenantId = normalizeTenantId(oauthState.tenant_id || tenantHint);
+    const tenant = getTenantById(tenantId);
+    if (!tenant) {
+      throw new Error("Tenant is not provisioned.");
+    }
+    if (tenant.active === false) {
+      throw new Error("Tenant is suspended.");
+    }
+
+    const tokenPayload = await exchangeGoogleAuthorizationCode({
+      code,
+      redirectUri: getGoogleRedirectUri(req)
+    });
+    const idToken = (tokenPayload.id_token || "").toString();
+    if (!idToken) {
+      throw new Error("Google did not return an ID token.");
+    }
+    const profile = await verifyGoogleIdToken({
+      idToken,
+      expectedNonce: oauthState.nonce
+    });
+    const usernameFromEmail = buildGoogleUsernameFromEmail(profile.email);
+    let user = await getGoogleUserByIdentityStore({
+      email: profile.email,
+      sub: profile.sub,
+      username: usernameFromEmail,
+      tenantId
+    });
+
+    if (!user && !GOOGLE_AUTH_AUTO_CREATE_USERS) {
+      throw new Error("Your Google account is not linked to this workspace. Ask an admin to add your Google user.");
+    }
+
+    if (!user) {
+      user = await createGoogleUserWithUniqueUsernameStore({
+        tenantId,
+        email: profile.email,
+        googleSub: profile.sub,
+        role: GOOGLE_AUTH_DEFAULT_ROLE
+      });
+      appendAuditEvent({
+        tenantId,
+        actorUsername: user.username,
+        actorRole: user.role,
+        action: "auth.google.user_auto_created",
+        targetType: "user",
+        targetId: user.id,
+        ipAddress: clientIp,
+        metadata: { email: profile.email, role: user.role }
+      });
+    } else {
+      user = await syncGoogleUserIdentityStore({
+        username: user.username,
+        email: profile.email,
+        sub: profile.sub,
+        tenantId
+      });
+    }
+
+    req.session.user = sanitizeUser({ ...user, tenant_id: tenantId });
+    req.session.google_oauth = null;
+    await saveSession(req);
+
+    clearAuthAttemptState({ ip: clientIp, username: user.username });
+    appendAuditEvent({
+      tenantId,
+      actorUsername: user.username,
+      actorRole: user.role,
+      action: "auth.login.success",
+      targetType: "user",
+      targetId: user.id,
+      ipAddress: clientIp,
+      metadata: { method: "google" }
+    });
+    return redirectToAppAfterAuth(res, { tenantId });
+  } catch (error) {
+    if (req.session?.google_oauth) {
+      req.session.google_oauth = null;
+      try {
+        await saveSession(req);
+      } catch (saveError) {
+        // do not block redirect
+      }
+    }
+    appendAuditEvent({
+      tenantId: tenantHint,
+      actorUsername: "unknown",
+      actorRole: "anonymous",
+      action: "auth.google.callback_failed",
+      targetType: "user",
+      targetId: "",
+      ipAddress: clientIp,
+      metadata: { reason: error.message || "unknown" }
+    });
+    return redirectToLoginWithAuthError(res, {
+      tenantId: tenantHint,
+      message: error.message || "Google sign-in failed."
+    });
+  }
 });
 
 app.patch("/api/me/last-media-url", async (req, res) => {
@@ -3067,7 +3825,9 @@ app.get("/api/health", (req, res) => {
       rate_window_ms: AUTH_RATE_WINDOW_MS,
       max_attempts_per_ip: AUTH_RATE_MAX_ATTEMPTS_PER_IP,
       lockout_threshold: AUTH_LOCKOUT_THRESHOLD,
-      lockout_ms: AUTH_LOCKOUT_MS
+      lockout_ms: AUTH_LOCKOUT_MS,
+      google_auth_enabled: GOOGLE_AUTH_ENABLED,
+      google_auth_configured: isGoogleAuthConfigured()
     },
     session_store_mode: SESSION_STORE_MODE,
     commercial: {
@@ -3738,12 +4498,43 @@ app.get("/api/admin/users", requireAdmin, async (req, res) => {
 app.post("/api/admin/users", requireAdmin, async (req, res) => {
   try {
     const tenantId = normalizeTenantId(req.tenant_id);
-    const created = await createUserStore({
-      username: req.body.username,
-      password: req.body.password,
-      role: req.body.role || "user",
-      tenantId
-    });
+    const provider = normalizeAuthProvider(req.body.auth_provider || "local");
+    let created;
+    if (provider === "google") {
+      if (!isGoogleAuthConfigured()) {
+        return res.status(400).json({ error: "Google sign-in is not configured on this server." });
+      }
+      const googleEmail = (req.body.google_email || req.body.email || "").toString().trim().toLowerCase();
+      if (!isEmail(googleEmail)) {
+        return res.status(400).json({ error: "google_email must be a valid email address." });
+      }
+      if (!isGoogleEmailAllowed(googleEmail)) {
+        return res.status(400).json({ error: "Google email domain is not allowed for this workspace." });
+      }
+      const requestedUsername = normalizeUsername(req.body.username || "");
+      if (requestedUsername) {
+        created = await createSsoUserStore({
+          username: requestedUsername,
+          role: req.body.role || "user",
+          provider: "google",
+          email: googleEmail,
+          tenantId
+        });
+      } else {
+        created = await createGoogleUserWithUniqueUsernameStore({
+          tenantId,
+          email: googleEmail,
+          role: req.body.role || "user"
+        });
+      }
+    } else {
+      created = await createUserStore({
+        username: req.body.username,
+        password: req.body.password,
+        role: req.body.role || "user",
+        tenantId
+      });
+    }
     appendAuditEvent({
       tenantId,
       actorUsername: req.session.user?.username || "unknown",
@@ -3752,7 +4543,12 @@ app.post("/api/admin/users", requireAdmin, async (req, res) => {
       targetType: "user",
       targetId: created.id,
       ipAddress: getAuthClientIp(req),
-      metadata: { username: created.username, role: created.role }
+      metadata: {
+        username: created.username,
+        role: created.role,
+        auth_provider: created.auth_provider,
+        email: created.email || ""
+      }
     });
     return res.status(201).json(created);
   } catch (error) {

@@ -45,6 +45,10 @@
           <input id="password" name="password" type="password" autocomplete="current-password" required />
 
           <button type="submit">Sign In</button>
+          <button id="google-signin-btn" type="button" class="secondary hidden">Sign In With Google</button>
+          <p id="google-login-hint" class="helper-text hidden">
+            Use your Google account for this tenant workspace.
+          </p>
         </form>
         <p id="login-message" class="message"></p>
       </section>
@@ -248,11 +252,24 @@
           <section class="card">
             <h2>User Management</h2>
             <form id="create-user-form">
-              <label for="new_username">New Username</label>
-              <input id="new_username" name="username" required />
+              <label for="new_auth_provider">Auth Provider</label>
+              <select id="new_auth_provider" name="auth_provider">
+                <option value="local">local (username + password)</option>
+                <option value="google">google (google sign-in)</option>
+              </select>
 
-              <label for="new_password">Temporary Password</label>
-              <input id="new_password" name="password" type="password" minlength="10" required />
+              <label for="new_username">New Username</label>
+              <input id="new_username" name="username" placeholder="required for local; optional for google" />
+
+              <div id="new_google_email_wrap" class="hidden">
+                <label for="new_google_email">Google Email</label>
+                <input id="new_google_email" name="google_email" type="email" placeholder="user@gmail.com" />
+              </div>
+
+              <div id="new_password_wrap">
+                <label for="new_password">Temporary Password</label>
+                <input id="new_password" name="password" type="password" minlength="10" />
+              </div>
 
               <label for="new_role">Role</label>
               <select id="new_role" name="role">
@@ -268,6 +285,8 @@
                 <tr>
                   <th>Username</th>
                   <th>Role</th>
+                  <th>Provider</th>
+                  <th>Email</th>
                   <th>Created</th>
                   <th>Reset Password</th>
                 </tr>

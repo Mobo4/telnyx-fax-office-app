@@ -8,6 +8,7 @@ Browser-based fax app for office use. It includes:
 - Webhook receiver for Telnyx fax events
 - Manual fallback polling for any fax ID
 - Login with role-based access (`admin` and `user`)
+- Optional Google Sign-In (per tenant) in addition to local username/password
 - Admin controls for user accounts and Telnyx fax app settings
 - Settings panel opened from a gear button (admin only)
 - Inline file attach on Send Fax page (no popup)
@@ -57,6 +58,15 @@ Set:
 - Optional: `DATA_DIR` (path for persistent JSON data)
 - Optional: `TELNYX_HTTP_TIMEOUT_MS` (default `5000`)
 - Optional: `LOCAL_SESSION_STORE_ENABLED` (default `true`; uses `DATA_DIR/sessions_local.json` when D1 is not enabled)
+- Optional Google auth:
+  - `GOOGLE_AUTH_ENABLED=true`
+  - `GOOGLE_CLIENT_ID`
+  - `GOOGLE_CLIENT_SECRET`
+  - `GOOGLE_REDIRECT_URI` (optional override; default is `https://<host>/api/auth/google/callback`)
+  - `GOOGLE_AUTH_AUTO_CREATE_USERS` (`true` to auto-create Google users on first login)
+  - `GOOGLE_AUTH_DEFAULT_ROLE` (`user` or `admin` for auto-created Google users)
+  - `GOOGLE_AUTH_ALLOWED_DOMAINS` (optional comma-separated email domains)
+  - `GOOGLE_OAUTH_STATE_MAX_AGE_MS` (default `600000`)
 - Commercial mode:
   - `MULTI_TENANT_ENABLED` (default `true`)
   - `DEFAULT_TENANT_ID` (default `default`)
@@ -98,9 +108,16 @@ Open:
   - Manage outbound copy email settings
   - Manage office profile defaults and user accounts
   - Create/reset user accounts
+  - Create Google-authenticated users by Google email
 - `user`:
   - Send/view faxes only
   - Upload files and reuse previous media URL
+
+Google account sharing model:
+
+- Multiple users can belong to the same tenant.
+- Each user can sign in with their own Google account (when linked as a Google user in User Management, or when auto-create is enabled).
+- Local username/password login remains available for local-provider users.
 
 Tenant provisioning notes:
 
@@ -109,6 +126,15 @@ Tenant provisioning notes:
 - Create tenants explicitly via admin API:
   - `POST /api/admin/tenants` (default tenant admin only)
   - `GET /api/admin/tenants`
+
+### 4.1 Google Sign-In setup (optional)
+
+1. In Google Cloud Console, create OAuth client credentials (Web application).
+2. Add authorized redirect URI:
+   - `https://<your-domain>/api/auth/google/callback`
+3. Put `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in your `.env`.
+4. Set `GOOGLE_AUTH_ENABLED=true`.
+5. Restart app and confirm login page shows `Sign In With Google`.
 
 ## 5. Telnyx webhook URL
 

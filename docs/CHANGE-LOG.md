@@ -1,5 +1,34 @@
 # Change Log
 
+## 2026-02-23 (google shared-account auth wave)
+### Completed
+- Added optional Google OAuth login endpoints:
+  - `GET /api/auth/google/config`
+  - `GET /api/auth/google/start`
+  - `GET /api/auth/google/callback`
+- Added OAuth state+nonce protection and callback expiration guard.
+- Added tenant-scoped Google user linking/provisioning:
+  - match by `google_sub`, email, or generated username
+  - auto-create Google users on first login when enabled
+- Added auth-provider aware user model fields:
+  - `auth_provider`
+  - `email`
+  - `google_sub`
+- Extended D1 users table compatibility:
+  - automatic column add for existing deployments
+  - indexes for provider/email/google_sub lookups
+- Updated login UI with `Sign In With Google` button and tenant-aware availability checks.
+- Updated admin User Management to create both:
+  - local users (`username/password`)
+  - google users (`google_email`, optional username)
+- Enforced password reset route for local-provider users only.
+- Added Google auth settings to `.env.example` and updated docs:
+  - `/Users/alex/Documents/Projects/Telnyx/README.md`
+  - `/Users/alex/Documents/Projects/Telnyx/docs/PRD-fax-app-enhancements.md`
+  - `/Users/alex/Documents/Projects/Telnyx/docs/PRD-google-authentication.md`
+  - `/Users/alex/Documents/Projects/Telnyx/docs/KNOWLEDGE-BASE.md`
+  - `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST.md`
+
 ## 2026-02-23 (v2-commercial compliance hardening wave)
 ### Completed
 - Removed implicit tenant auto-provisioning from request flow.

@@ -5,6 +5,7 @@
 - Scope: Send reliability, confirmation UX, multi-file handling, login page polish, history retention, auth hardening, deployment guidance, D1 persistence.
 - Scope: security hardening (webhook verification, signed media delivery, login throttling, queue recovery, durable sessions).
 - Scope (v2 branch extension): tenant-scoped commercial controls (audit trail, plan limits, idempotent send, billing/mfa admin APIs) on `codex/v2-commercial`.
+- Scope (2026-02-23): Google OAuth login option with tenant-scoped shared account membership.
 
 ## Product Goal
 Provide a secure browser-based fax system for Eyecare Care of Orange County with reliable outbound sending, clear confirmation feedback, and admin-controlled settings.
@@ -27,6 +28,7 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 6. As an admin, I can manage Telnyx and office defaults securely.
 7. As staff, I can rely on always-on inbound handling and have inbound email as backup.
 8. As admin, I can access recent history quickly while retaining older records.
+9. As office staff, I can sign in with my own Google account under the same tenant account.
 
 ## Functional Requirements
 
@@ -37,6 +39,9 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Admin routes return `403` for non-admin users.
 - User storage must survive schema drift (array/map migration), with bcrypt-hash compatibility for old credentials.
 - Optional Cloudflare D1 persistence for user accounts when running on ephemeral hosts.
+- Optional Google Sign-In per tenant (`local` and `google` auth providers supported).
+- Admin can create Google users by Google email (with optional custom username) under the tenant.
+- Google callback may auto-create tenant users (configurable).
 - Add login throttling per IP and temporary lockouts per username.
 - Add durable session store (D1-backed where configured) for restart-safe auth sessions.
 - Reject unknown/non-provisioned tenant IDs at login and protected API routes.
@@ -141,6 +146,9 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Repeated failed login attempts trigger throttling/lockout responses.
 - Queued bulk jobs are resumed by background worker after restart.
 - Sessions persist across restart when D1 is configured or when local file session store is enabled.
+- Login page shows Google Sign-In only when feature is enabled/configured.
+- Google users cannot access admin settings unless role is `admin`.
+- Non-admin users cannot access settings even if authenticated via Google.
 
 ## Gaps Reviewed and Resolved
 - Gap: send failures were not obvious enough.
