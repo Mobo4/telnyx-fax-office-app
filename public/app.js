@@ -4,6 +4,7 @@ const adminPanel = document.getElementById("admin-panel");
 
 const loginForm = document.getElementById("login-form");
 const loginMessage = document.getElementById("login-message");
+const tenantInput = document.getElementById("tenant_id");
 const logoutBtn = document.getElementById("logout-btn");
 const settingsToggleBtn = document.getElementById("settings-toggle-btn");
 const sessionLabel = document.getElementById("session-label");
@@ -84,6 +85,7 @@ const ALLOWED_SEND_FILE_EXT = new Set([".pdf", ".tif", ".tiff"]);
 
 let state = {
   user: null,
+  tenantId: (window.localStorage.getItem("fax_app_tenant_id") || "default").toLowerCase(),
   selectedUploadFiles: [],
   faxes: [],
   historyFilter: "sent",
@@ -237,8 +239,23 @@ function parseRecipientsFromInput(value) {
   };
 }
 
+function normalizeTenantId(value) {
+  const tenant = (value || "").toString().trim().toLowerCase();
+  if (!tenant) return "default";
+  if (!/^[a-z0-9._-]{2,64}$/.test(tenant)) return "default";
+  return tenant;
+}
+
 async function api(path, options = {}) {
-  const response = await fetch(path, options);
+  const headers = new Headers(options.headers || {});
+  const tenantId = normalizeTenantId(state.tenantId || tenantInput?.value || "default");
+  headers.set("X-Tenant-Id", tenantId);
+  state.tenantId = tenantId;
+  window.localStorage.setItem("fax_app_tenant_id", tenantId);
+  const response = await fetch(path, {
+    ...options,
+    headers
+  });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = new Error(body.error || "Request failed.");
@@ -543,13 +560,20 @@ function applyAdminPanelVisibility() {
 
 function setAuthenticatedView(user) {
   state.user = user || null;
+  if (user?.tenant_id) {
+    state.tenantId = normalizeTenantId(user.tenant_id);
+    window.localStorage.setItem("fax_app_tenant_id", state.tenantId);
+  }
+  if (tenantInput) {
+    tenantInput.value = normalizeTenantId(state.tenantId || "default");
+  }
   const isAuthenticated = Boolean(user);
   document.body.classList.toggle("login-mode", !isAuthenticated);
   loginPanel.classList.toggle("hidden", isAuthenticated);
   appShell.classList.toggle("hidden", !isAuthenticated);
 
   if (isAuthenticated) {
-    sessionLabel.textContent = `Logged in as ${user.username} (${user.role})`;
+    sessionLabel.textContent = `Logged in as ${user.username} (${user.role}) on tenant ${state.tenantId}`;
     mediaUrlInput.value = user.last_media_url || "";
     bulkMediaUrlInput.value = user.last_media_url || "";
     setLastUrlUI(user.last_media_url || "");
@@ -1110,17 +1134,24 @@ loginForm.addEventListener("submit", async (event) => {
   setMessage(loginMessage, "");
 
   const formData = new FormData(loginForm);
+  const tenantId = normalizeTenantId(formData.get("tenant_id") || state.tenantId || "default");
+  state.tenantId = tenantId;
+  window.localStorage.setItem("fax_app_tenant_id", tenantId);
   try {
     const body = await api("/api/auth/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        tenant_id: tenantId,
         username: formData.get("username"),
         password: formData.get("password")
       })
     });
     setAuthenticatedView(body.user);
     loginForm.reset();
+    if (tenantInput) {
+      tenantInput.value = tenantId;
+    }
     await initAfterLogin();
   } catch (error) {
     setMessage(loginMessage, error.message);

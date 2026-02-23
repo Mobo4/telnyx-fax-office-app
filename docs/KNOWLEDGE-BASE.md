@@ -34,6 +34,7 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - Signed expiring media links for outbound fax document retrieval.
 - Background worker loop for queued bulk fax recovery.
 - Optional webhook signature verification for Telnyx events.
+- v2 commercial branch adds tenant-aware request scoping (`X-Tenant-Id`), immutable audit logs, billing/plan admin APIs, and idempotent outbound send.
 
 ## API Surface (primary)
 - Auth: `/api/auth/login`, `/api/auth/logout`, `/api/auth/me`
@@ -45,6 +46,11 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - Archive: `/api/faxes/archive` (admin-only)
 - Health: `/api/health` (includes hosting/storage diagnostics)
 - Media: `/media/:filename?exp=...&sig=...` (signed public fetch URL for Telnyx media retrieval)
+- v2 commercial admin APIs:
+  - `/api/admin/audit-events`
+  - `/api/admin/billing`
+  - `/api/admin/tenant`
+  - `/api/admin/users/:username/mfa`
 
 ## Send Workflow (current)
 1. User fills recipients.
@@ -122,6 +128,20 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - D1 session table: `sessions` with expiration timestamps.
 - Optional in-memory mode only when `LOCAL_SESSION_STORE_ENABLED=false`.
 - Health endpoint reports `session_store_mode` as `d1`, `local_file`, or `memory`.
+
+## v2 Tenant Context (commercial alpha)
+- Active tenant resolved in this order:
+  1. session user tenant
+  2. `X-Tenant-Id` header
+  3. request body/query `tenant_id`
+  4. `DEFAULT_TENANT_ID`
+- Protected `/api/*` routes require session tenant == active tenant.
+- Default tenant remains backward compatible (`default`) to avoid breaking v1 operations.
+
+## v2 Idempotency and Audit
+- `POST /api/faxes` supports `Idempotency-Key`.
+- Cached responses are tenant+method+path scoped with TTL (`IDEMPOTENCY_TTL_SECONDS`).
+- Security/ops events recorded in `/Users/alex/Documents/Projects/Telnyx/data/audit_events.json`.
 
 ## Auth/User Persistence Notes
 - User store is normalized on read/write (supports legacy `items` map or array layouts).

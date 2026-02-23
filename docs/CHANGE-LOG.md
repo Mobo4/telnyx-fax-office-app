@@ -1,5 +1,30 @@
 # Change Log
 
+## 2026-02-23 (v2-commercial implementation wave)
+### Completed
+- Implemented tenant-aware API context (`X-Tenant-Id` + session tenant binding) on `codex/v2-commercial`.
+- Added immutable audit log pipeline and admin query endpoint:
+  - `GET /api/admin/audit-events`
+- Added idempotent send support for `POST /api/faxes` using `Idempotency-Key`.
+- Added commercial plan enforcement for:
+  - max users per tenant
+  - max contacts per tenant
+  - max recipients per send
+- Added commercial billing admin APIs:
+  - `GET /api/admin/billing`
+  - `PATCH /api/admin/billing`
+  - `GET /api/admin/tenant`
+- Added admin MFA toggle endpoint:
+  - `PATCH /api/admin/users/:username/mfa`
+- Added tenant-aware config/settings persistence and tenant-scoped history/contact filtering.
+- Added v2 UI tenant login field and tenant header propagation for browser requests.
+- Added new commercial environment variables in `.env.example`.
+
+### Validation
+- `node --check /Users/alex/Documents/Projects/Telnyx/server.js`
+- `node --check /Users/alex/Documents/Projects/Telnyx/public/app.js`
+- API smoke test passed for login, tenant mismatch protection, user create, MFA toggle, billing update, contacts, and audit reads.
+
 ## 2026-02-23 (v2-commercial branch)
 ### Completed
 - Created commercial infrastructure scaffold:

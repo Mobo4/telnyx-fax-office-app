@@ -57,6 +57,11 @@ Set:
 - Optional: `DATA_DIR` (path for persistent JSON data)
 - Optional: `TELNYX_HTTP_TIMEOUT_MS` (default `5000`)
 - Optional: `LOCAL_SESSION_STORE_ENABLED` (default `true`; uses `DATA_DIR/sessions_local.json` when D1 is not enabled)
+- Commercial mode:
+  - `MULTI_TENANT_ENABLED` (default `true`)
+  - `DEFAULT_TENANT_ID` (default `default`)
+  - `COMMERCIAL_ENFORCEMENTS_ENABLED` (default `true`)
+  - `IDEMPOTENCY_TTL_SECONDS` (default `86400`)
 - Optional Cloudflare D1 persistence (users + settings/contacts/fax history snapshots):
   - `CLOUDFLARE_ACCOUNT_ID`
   - `CLOUDFLARE_D1_DATABASE_ID`
@@ -208,6 +213,20 @@ When D1 is not enabled, login sessions persist to local file storage by default 
 CSV template:
 
 - `/contact-import-template.csv`
+
+## Commercial v2 alpha
+
+- Tenant-aware login and API scoping (`X-Tenant-Id` header).
+- Tenant-scoped users, contacts, fax history, and bulk jobs.
+- Idempotent outbound fax queue endpoint via `Idempotency-Key` header on `POST /api/faxes`.
+- Immutable audit event log:
+  - `GET /api/admin/audit-events`
+- Billing and plan controls:
+  - `GET /api/admin/billing`
+  - `PATCH /api/admin/billing`
+- Admin tenant/user security controls:
+  - `PATCH /api/admin/users/:username/mfa`
+  - `GET /api/admin/tenant`
 
 ## Versioning
 

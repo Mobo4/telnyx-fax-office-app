@@ -32,11 +32,36 @@ const CONFIG_FILE = path.join(DATA_DIR, "config.json");
 const CONTACTS_FILE = path.join(DATA_DIR, "contacts.json");
 const BULK_JOBS_FILE = path.join(DATA_DIR, "bulk_jobs.json");
 const LOCAL_SESSIONS_FILE = path.join(DATA_DIR, "sessions_local.json");
+const TENANTS_FILE = path.join(DATA_DIR, "tenants.json");
+const AUDIT_EVENTS_FILE = path.join(DATA_DIR, "audit_events.json");
+const IDEMPOTENCY_FILE = path.join(DATA_DIR, "idempotency_keys.json");
+const BILLING_FILE = path.join(DATA_DIR, "billing.json");
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const MAX_CONTACTS = 3000;
 const MAX_SEND_RECIPIENTS = 100;
 const MAX_UPLOAD_BATCH_FILES = 5;
 const FAX_HISTORY_VISIBLE_LIMIT = 50;
+const DEFAULT_TENANT_ID = (process.env.DEFAULT_TENANT_ID || "default").trim() || "default";
+const MULTI_TENANT_ENABLED = process.env.MULTI_TENANT_ENABLED !== "false";
+const COMMERCIAL_ENFORCEMENTS_ENABLED = process.env.COMMERCIAL_ENFORCEMENTS_ENABLED !== "false";
+const IDEMPOTENCY_TTL_SECONDS = Math.max(60, Number(process.env.IDEMPOTENCY_TTL_SECONDS || 24 * 60 * 60));
+const PLAN_LIMITS = {
+  starter: {
+    max_contacts: 3000,
+    max_users: 10,
+    max_recipients_per_send: 25
+  },
+  pro: {
+    max_contacts: 10000,
+    max_users: 50,
+    max_recipients_per_send: 100
+  },
+  enterprise: {
+    max_contacts: 50000,
+    max_users: 500,
+    max_recipients_per_send: 500
+  }
+};
 const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 const D1_ACCOUNT_ID = (process.env.CLOUDFLARE_ACCOUNT_ID || "").trim();
 const D1_DATABASE_ID = (process.env.CLOUDFLARE_D1_DATABASE_ID || "").trim();
@@ -208,6 +233,38 @@ function parseRecipientTokensInput(value) {
 
 function normalizeUsername(value) {
   return (value || "").trim().toLowerCase();
+}
+
+function normalizeTenantId(value) {
+  const tenant = (value || "").toString().trim().toLowerCase();
+  if (!tenant) return DEFAULT_TENANT_ID;
+  if (!/^[a-z0-9._-]{2,64}$/.test(tenant)) {
+    return DEFAULT_TENANT_ID;
+  }
+  return tenant;
+}
+
+function getTenantIdFromRequest(req) {
+  if (!MULTI_TENANT_ENABLED) {
+    return DEFAULT_TENANT_ID;
+  }
+  const sessionTenant = normalizeTenantId(req.session?.user?.tenant_id);
+  if (sessionTenant && sessionTenant !== DEFAULT_TENANT_ID) {
+    return sessionTenant;
+  }
+  const headerTenant = normalizeTenantId(req.get("x-tenant-id"));
+  if (headerTenant && headerTenant !== DEFAULT_TENANT_ID) {
+    return headerTenant;
+  }
+  const bodyTenant = normalizeTenantId(req.body?.tenant_id);
+  if (bodyTenant && bodyTenant !== DEFAULT_TENANT_ID) {
+    return bodyTenant;
+  }
+  const queryTenant = normalizeTenantId(req.query?.tenant_id);
+  if (queryTenant && queryTenant !== DEFAULT_TENANT_ID) {
+    return queryTenant;
+  }
+  return DEFAULT_TENANT_ID;
 }
 
 function isEmail(value) {
@@ -490,6 +547,42 @@ function ensureDataFiles() {
   if (!fs.existsSync(BULK_JOBS_FILE)) {
     writeJson(BULK_JOBS_FILE, { updated_at: new Date().toISOString(), items: {} });
   }
+  if (!fs.existsSync(TENANTS_FILE)) {
+    writeJson(TENANTS_FILE, {
+      updated_at: new Date().toISOString(),
+      items: {
+        [DEFAULT_TENANT_ID]: {
+          id: DEFAULT_TENANT_ID,
+          name: "Default Tenant",
+          plan: "starter",
+          active: true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        }
+      }
+    });
+  }
+  if (!fs.existsSync(AUDIT_EVENTS_FILE)) {
+    writeJson(AUDIT_EVENTS_FILE, { updated_at: new Date().toISOString(), items: [] });
+  }
+  if (!fs.existsSync(IDEMPOTENCY_FILE)) {
+    writeJson(IDEMPOTENCY_FILE, { updated_at: new Date().toISOString(), items: [] });
+  }
+  if (!fs.existsSync(BILLING_FILE)) {
+    writeJson(BILLING_FILE, {
+      updated_at: new Date().toISOString(),
+      items: {
+        [DEFAULT_TENANT_ID]: {
+          tenant_id: DEFAULT_TENANT_ID,
+          plan: "starter",
+          seats: 5,
+          status: "active",
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        }
+      }
+    });
+  }
 
   if (!fs.existsSync(USERS_FILE)) {
     const adminUsername = normalizeUsername(process.env.ADMIN_USERNAME || "admin");
@@ -502,9 +595,12 @@ function ensureDataFiles() {
       items: [
         {
           id: crypto.randomUUID(),
+          tenant_id: DEFAULT_TENANT_ID,
           username: adminUsername,
           role: "admin",
           password_hash: bcrypt.hashSync(adminPassword, 12),
+          mfa_enabled: false,
+          mfa_secret: "",
           last_media_url: "",
           created_at: now,
           updated_at: now
@@ -542,6 +638,234 @@ function writeArchiveStore(store) {
   });
 }
 
+function readTenantsStore() {
+  return readJson(TENANTS_FILE, { updated_at: new Date().toISOString(), items: {} });
+}
+
+function writeTenantsStore(store) {
+  writeJson(TENANTS_FILE, {
+    ...store,
+    updated_at: new Date().toISOString()
+  });
+}
+
+function ensureTenantExists(tenantId) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const store = readTenantsStore();
+  if (store.items?.[normalizedTenantId]) {
+    return store.items[normalizedTenantId];
+  }
+  const now = new Date().toISOString();
+  const tenant = {
+    id: normalizedTenantId,
+    name: normalizedTenantId === DEFAULT_TENANT_ID ? "Default Tenant" : `Tenant ${normalizedTenantId}`,
+    plan: "starter",
+    active: true,
+    created_at: now,
+    updated_at: now
+  };
+  store.items[normalizedTenantId] = tenant;
+  writeTenantsStore(store);
+  return tenant;
+}
+
+function readBillingStore() {
+  return readJson(BILLING_FILE, { updated_at: new Date().toISOString(), items: {} });
+}
+
+function writeBillingStore(store) {
+  writeJson(BILLING_FILE, {
+    ...store,
+    updated_at: new Date().toISOString()
+  });
+}
+
+function getTenantBilling(tenantId) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const tenants = readTenantsStore();
+  const billingStore = readBillingStore();
+  const tenant = tenants.items?.[normalizedTenantId] || ensureTenantExists(normalizedTenantId);
+  const now = new Date().toISOString();
+  const billing = billingStore.items?.[normalizedTenantId] || {
+    tenant_id: normalizedTenantId,
+    plan: tenant.plan || "starter",
+    seats: 5,
+    status: tenant.active === false ? "suspended" : "active",
+    created_at: now,
+    updated_at: now
+  };
+
+  if (!billingStore.items?.[normalizedTenantId]) {
+    billingStore.items = billingStore.items || {};
+    billingStore.items[normalizedTenantId] = billing;
+    writeBillingStore(billingStore);
+  }
+
+  return billing;
+}
+
+function updateTenantBilling(tenantId, patch = {}) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const billingStore = readBillingStore();
+  const existing = getTenantBilling(normalizedTenantId);
+  const nextPlan = (patch.plan || existing.plan || "starter").toString().trim().toLowerCase();
+  const plan = PLAN_LIMITS[nextPlan] ? nextPlan : existing.plan || "starter";
+  const next = {
+    ...existing,
+    plan,
+    seats: Math.max(1, Number(patch.seats || existing.seats || 1)),
+    status: (patch.status || existing.status || "active").toString().trim().toLowerCase(),
+    updated_at: new Date().toISOString()
+  };
+  billingStore.items = billingStore.items || {};
+  billingStore.items[normalizedTenantId] = next;
+  writeBillingStore(billingStore);
+
+  const tenants = readTenantsStore();
+  const tenant = tenants.items?.[normalizedTenantId] || ensureTenantExists(normalizedTenantId);
+  tenants.items[normalizedTenantId] = {
+    ...tenant,
+    plan: next.plan,
+    active: next.status !== "suspended",
+    updated_at: new Date().toISOString()
+  };
+  writeTenantsStore(tenants);
+  return next;
+}
+
+function getTenantPlanLimits(tenantId) {
+  const billing = getTenantBilling(tenantId);
+  const plan = (billing.plan || "starter").toLowerCase();
+  return PLAN_LIMITS[plan] || PLAN_LIMITS.starter;
+}
+
+function readAuditStore() {
+  return readJson(AUDIT_EVENTS_FILE, { updated_at: new Date().toISOString(), items: [] });
+}
+
+function writeAuditStore(store) {
+  writeJson(AUDIT_EVENTS_FILE, {
+    ...store,
+    updated_at: new Date().toISOString()
+  });
+}
+
+function appendAuditEvent({
+  tenantId,
+  actorUsername,
+  actorRole,
+  action,
+  targetType = "",
+  targetId = "",
+  ipAddress = "",
+  metadata = {}
+}) {
+  const store = readAuditStore();
+  const event = {
+    id: crypto.randomUUID(),
+    tenant_id: normalizeTenantId(tenantId),
+    actor_username: (actorUsername || "system").toString(),
+    actor_role: (actorRole || "system").toString(),
+    action: (action || "unknown").toString(),
+    target_type: (targetType || "").toString(),
+    target_id: (targetId || "").toString(),
+    ip_address: (ipAddress || "").toString(),
+    metadata: metadata && typeof metadata === "object" ? metadata : {},
+    created_at: new Date().toISOString()
+  };
+  const items = Array.isArray(store.items) ? store.items : [];
+  items.push(event);
+  if (items.length > 100000) {
+    items.splice(0, items.length - 100000);
+  }
+  store.items = items;
+  writeAuditStore(store);
+  return event;
+}
+
+function listAuditEvents({ tenantId, limit = 200, action = "" }) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const max = Math.max(1, Math.min(Number(limit || 200), 2000));
+  const actionFilter = (action || "").toString().trim().toLowerCase();
+  const store = readAuditStore();
+  const items = Array.isArray(store.items) ? store.items : [];
+  return items
+    .filter((item) => normalizeTenantId(item.tenant_id) === normalizedTenantId)
+    .filter((item) => (actionFilter ? (item.action || "").toLowerCase() === actionFilter : true))
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    .slice(0, max);
+}
+
+function readIdempotencyStore() {
+  return readJson(IDEMPOTENCY_FILE, { updated_at: new Date().toISOString(), items: [] });
+}
+
+function writeIdempotencyStore(store) {
+  writeJson(IDEMPOTENCY_FILE, {
+    ...store,
+    updated_at: new Date().toISOString()
+  });
+}
+
+function cleanupIdempotencyStore() {
+  const store = readIdempotencyStore();
+  const items = Array.isArray(store.items) ? store.items : [];
+  const now = Date.now();
+  const filtered = items.filter((item) => new Date(item.expires_at || 0).getTime() > now);
+  if (filtered.length !== items.length) {
+    store.items = filtered;
+    writeIdempotencyStore(store);
+  }
+}
+
+function getIdempotentResponse({ tenantId, key, method, path: requestPath }) {
+  if (!key) return null;
+  cleanupIdempotencyStore();
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const store = readIdempotencyStore();
+  const items = Array.isArray(store.items) ? store.items : [];
+  return (
+    items.find(
+      (item) =>
+        normalizeTenantId(item.tenant_id) === normalizedTenantId &&
+        item.key === key &&
+        item.method === method &&
+        item.path === requestPath
+    ) || null
+  );
+}
+
+function saveIdempotentResponse({ tenantId, key, method, path: requestPath, statusCode, responseBody }) {
+  if (!key) return;
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + IDEMPOTENCY_TTL_SECONDS * 1000);
+  const store = readIdempotencyStore();
+  const items = Array.isArray(store.items) ? store.items : [];
+  const filtered = items.filter(
+    (item) =>
+      !(
+        normalizeTenantId(item.tenant_id) === normalizedTenantId &&
+        item.key === key &&
+        item.method === method &&
+        item.path === requestPath
+      )
+  );
+  filtered.push({
+    id: crypto.randomUUID(),
+    tenant_id: normalizedTenantId,
+    key,
+    method,
+    path: requestPath,
+    status_code: Number(statusCode || 200),
+    response_body: responseBody && typeof responseBody === "object" ? responseBody : {},
+    created_at: now.toISOString(),
+    expires_at: expiresAt.toISOString()
+  });
+  store.items = filtered;
+  writeIdempotencyStore(store);
+}
+
 function normalizeUsersStore(rawUsers) {
   const rawItems = Array.isArray(rawUsers?.items)
     ? rawUsers.items
@@ -553,8 +877,11 @@ function normalizeUsersStore(rawUsers) {
     .filter(Boolean)
     .map((item) => ({
       ...item,
+      tenant_id: normalizeTenantId(item.tenant_id),
       username: normalizeUsername(item.username),
       role: item.role === "admin" ? "admin" : "user",
+      mfa_enabled: item.mfa_enabled === true,
+      mfa_secret: (item.mfa_secret || "").toString(),
       last_media_url: item.last_media_url || ""
     }));
 
@@ -566,7 +893,9 @@ function normalizeUsersStore(rawUsers) {
 
 function ensureAdminAccount(usersStore) {
   const users = normalizeUsersStore(usersStore);
-  const hasAdmin = users.items.some((item) => item.role === "admin");
+  const hasAdmin = users.items.some(
+    (item) => item.role === "admin" && normalizeTenantId(item.tenant_id) === DEFAULT_TENANT_ID
+  );
   if (hasAdmin) {
     return users;
   }
@@ -577,9 +906,12 @@ function ensureAdminAccount(usersStore) {
   const now = new Date().toISOString();
   users.items.push({
     id: crypto.randomUUID(),
+    tenant_id: DEFAULT_TENANT_ID,
     username: adminUsername,
     role: "admin",
     password_hash: bcrypt.hashSync(adminPassword, 12),
+    mfa_enabled: false,
+    mfa_secret: "",
     last_media_url: "",
     created_at: now,
     updated_at: now
@@ -602,7 +934,8 @@ function writeUsers(users) {
   writeJson(USERS_FILE, normalizeUsersStore(users));
 }
 
-function readConfig() {
+function readConfig(tenantId = DEFAULT_TENANT_ID) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
   const defaults = {
     updated_at: new Date().toISOString(),
     telnyx_api_key: process.env.TELNYX_API_KEY || "",
@@ -619,16 +952,34 @@ function readConfig() {
     office_email: process.env.OFFICE_EMAIL || "eyecarecenteroc@gmail.com"
   };
   const stored = readJson(CONFIG_FILE, defaults);
+  const tenantsMap = stored?.tenants && typeof stored.tenants === "object" ? stored.tenants : {};
+  const tenantScoped = tenantsMap[normalizedTenantId] || {};
   return {
     ...defaults,
-    ...stored
+    ...stored,
+    ...tenantScoped,
+    tenant_id: normalizedTenantId
   };
 }
 
-function writeConfig(config) {
-  writeJson(CONFIG_FILE, {
+function writeConfig(config, tenantId = DEFAULT_TENANT_ID) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const existing = readJson(CONFIG_FILE, {});
+  const tenants = existing?.tenants && typeof existing.tenants === "object" ? existing.tenants : {};
+  const now = new Date().toISOString();
+  const nextTenantConfig = {
+    ...readConfig(normalizedTenantId),
     ...config,
-    updated_at: new Date().toISOString()
+    updated_at: now,
+    tenant_id: normalizedTenantId
+  };
+  tenants[normalizedTenantId] = nextTenantConfig;
+
+  writeJson(CONFIG_FILE, {
+    ...existing,
+    ...nextTenantConfig,
+    tenants,
+    updated_at: now
   });
 }
 
@@ -655,7 +1006,8 @@ function contactCount(store) {
   return Object.keys(store?.items || {}).length;
 }
 
-function markContactsUsedByFaxNumbers(faxNumbers = []) {
+function markContactsUsedByFaxNumbers(faxNumbers = [], tenantId = DEFAULT_TENANT_ID) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
   const numbers = Array.from(new Set((faxNumbers || []).map((item) => normalizeE164(item)).filter(Boolean)));
   if (!numbers.length) {
     return;
@@ -663,7 +1015,9 @@ function markContactsUsedByFaxNumbers(faxNumbers = []) {
 
   const store = readContactsStore();
   const byFax = new Map(
-    Object.values(store.items || {}).map((contact) => [normalizeE164(contact.fax_number), contact.id])
+    Object.values(store.items || {})
+      .filter((contact) => normalizeTenantId(contact.tenant_id) === normalizedTenantId)
+      .map((contact) => [normalizeE164(contact.fax_number), contact.id])
   );
   const now = new Date().toISOString();
   let changed = false;
@@ -688,11 +1042,13 @@ function markContactsUsedByFaxNumbers(faxNumbers = []) {
   }
 }
 
-function listFrequentContacts(limit = 5) {
+function listFrequentContacts(limit = 5, tenantId = DEFAULT_TENANT_ID) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
   const max = Math.max(1, Math.min(Number(limit) || 5, 20));
   const store = readContactsStore();
   return Object.values(store.items || {})
     .map((contact) => normalizeContactRecord(contact))
+    .filter((contact) => normalizeTenantId(contact.tenant_id) === normalizedTenantId)
     .filter((contact) => contact.usage_count > 0)
     .sort((a, b) => {
       if (b.usage_count !== a.usage_count) {
@@ -717,17 +1073,26 @@ function writeBulkJobsStore(store) {
 function sanitizeUser(user) {
   return {
     id: user.id,
+    tenant_id: normalizeTenantId(user.tenant_id),
     username: user.username,
     role: user.role,
+    mfa_enabled: user.mfa_enabled === true,
     last_media_url: user.last_media_url || "",
     created_at: user.created_at,
     updated_at: user.updated_at
   };
 }
 
-function getUserByUsername(username) {
+function getUserByUsername(username, tenantId = DEFAULT_TENANT_ID) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
   const users = readUsers();
-  return users.items.find((item) => item.username === normalizeUsername(username)) || null;
+  return (
+    users.items.find(
+      (item) =>
+        item.username === normalizeUsername(username) &&
+        normalizeTenantId(item.tenant_id) === normalizedTenantId
+    ) || null
+  );
 }
 
 function verifyUserPassword(user, password) {
@@ -741,12 +1106,16 @@ function verifyUserPassword(user, password) {
   return false;
 }
 
-function listUsersSafe() {
+function listUsersSafe(tenantId = DEFAULT_TENANT_ID) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
   const users = readUsers();
-  return users.items.map((item) => sanitizeUser(item));
+  return users.items
+    .filter((item) => normalizeTenantId(item.tenant_id) === normalizedTenantId)
+    .map((item) => sanitizeUser(item));
 }
 
-function createUser({ username, password, role }) {
+function createUser({ username, password, role, tenantId = DEFAULT_TENANT_ID }) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
   const normalizedUsername = normalizeUsername(username);
   if (!/^[a-z0-9._-]{3,64}$/.test(normalizedUsername)) {
     throw new Error("Username must be 3-64 chars and use letters, numbers, dot, underscore, or dash.");
@@ -759,7 +1128,19 @@ function createUser({ username, password, role }) {
   }
 
   const users = readUsers();
-  const exists = users.items.some((item) => item.username === normalizedUsername);
+  const tenantUserCount = users.items.filter(
+    (item) => normalizeTenantId(item.tenant_id) === normalizedTenantId
+  ).length;
+  const maxUsers = getTenantPlanLimits(normalizedTenantId).max_users;
+  if (COMMERCIAL_ENFORCEMENTS_ENABLED && tenantUserCount >= maxUsers) {
+    throw new Error(`User limit reached for current plan (${maxUsers}).`);
+  }
+
+  const exists = users.items.some(
+    (item) =>
+      item.username === normalizedUsername &&
+      normalizeTenantId(item.tenant_id) === normalizedTenantId
+  );
   if (exists) {
     throw new Error("Username already exists.");
   }
@@ -767,9 +1148,12 @@ function createUser({ username, password, role }) {
   const now = new Date().toISOString();
   const user = {
     id: crypto.randomUUID(),
+    tenant_id: normalizedTenantId,
     username: normalizedUsername,
     role,
     password_hash: bcrypt.hashSync(password, 12),
+    mfa_enabled: false,
+    mfa_secret: "",
     last_media_url: "",
     created_at: now,
     updated_at: now
@@ -781,13 +1165,18 @@ function createUser({ username, password, role }) {
   return sanitizeUser(user);
 }
 
-function updateUserPassword({ username, password }) {
+function updateUserPassword({ username, password, tenantId = DEFAULT_TENANT_ID }) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
   if (!password || password.length < 10) {
     throw new Error("Password must be at least 10 characters.");
   }
 
   const users = readUsers();
-  const index = users.items.findIndex((item) => item.username === normalizeUsername(username));
+  const index = users.items.findIndex(
+    (item) =>
+      item.username === normalizeUsername(username) &&
+      normalizeTenantId(item.tenant_id) === normalizedTenantId
+  );
   if (index < 0) {
     throw new Error("User not found.");
   }
@@ -802,9 +1191,14 @@ function updateUserPassword({ username, password }) {
   return sanitizeUser(users.items[index]);
 }
 
-function updateUserLastMediaUrl({ username, mediaUrl }) {
+function updateUserLastMediaUrl({ username, mediaUrl, tenantId = DEFAULT_TENANT_ID }) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
   const users = readUsers();
-  const index = users.items.findIndex((item) => item.username === normalizeUsername(username));
+  const index = users.items.findIndex(
+    (item) =>
+      item.username === normalizeUsername(username) &&
+      normalizeTenantId(item.tenant_id) === normalizedTenantId
+  );
   if (index < 0) {
     throw new Error("User not found.");
   }
@@ -812,6 +1206,27 @@ function updateUserLastMediaUrl({ username, mediaUrl }) {
   users.items[index] = {
     ...users.items[index],
     last_media_url: mediaUrl || "",
+    updated_at: new Date().toISOString()
+  };
+  users.updated_at = new Date().toISOString();
+  writeUsers(users);
+  return sanitizeUser(users.items[index]);
+}
+
+function updateUserMfa({ username, enabled, tenantId = DEFAULT_TENANT_ID }) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const users = readUsers();
+  const index = users.items.findIndex(
+    (item) =>
+      item.username === normalizeUsername(username) &&
+      normalizeTenantId(item.tenant_id) === normalizedTenantId
+  );
+  if (index < 0) {
+    throw new Error("User not found.");
+  }
+  users.items[index] = {
+    ...users.items[index],
+    mfa_enabled: enabled === true,
     updated_at: new Date().toISOString()
   };
   users.updated_at = new Date().toISOString();
@@ -1115,6 +1530,8 @@ function d1NormalizeUserRow(row) {
     username: normalizeUsername(row.username),
     role: row.role === "admin" ? "admin" : "user",
     password_hash: row.password_hash || "",
+    mfa_enabled: false,
+    mfa_secret: "",
     last_media_url: row.last_media_url || "",
     created_at: row.created_at,
     updated_at: row.updated_at
@@ -1248,29 +1665,46 @@ async function ensureD1UsersTable() {
   )`);
 }
 
-async function getUserByUsernameStore(username) {
+async function getUserByUsernameStore(username, tenantId = DEFAULT_TENANT_ID) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
   if (!D1_USERS_ENABLED) {
-    return getUserByUsername(username);
+    return getUserByUsername(username, normalizedTenantId);
+  }
+  if (normalizedTenantId !== DEFAULT_TENANT_ID) {
+    throw new Error("Tenant-scoped users with D1 are not enabled for this build.");
   }
   const rows = await d1Query("SELECT * FROM users WHERE username = ? LIMIT 1", [
     normalizeUsername(username)
   ]);
-  return d1NormalizeUserRow(rows[0] || null);
+  const user = d1NormalizeUserRow(rows[0] || null);
+  if (!user) return null;
+  return {
+    ...user,
+    tenant_id: DEFAULT_TENANT_ID
+  };
 }
 
-async function listUsersSafeStore() {
+async function listUsersSafeStore(tenantId = DEFAULT_TENANT_ID) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
   if (!D1_USERS_ENABLED) {
-    return listUsersSafe();
+    return listUsersSafe(normalizedTenantId);
+  }
+  if (normalizedTenantId !== DEFAULT_TENANT_ID) {
+    throw new Error("Tenant-scoped users with D1 are not enabled for this build.");
   }
   const rows = await d1Query(
     "SELECT id, username, role, last_media_url, created_at, updated_at FROM users ORDER BY created_at DESC"
   );
-  return rows.map((row) => sanitizeUser(d1NormalizeUserRow(row)));
+  return rows.map((row) => sanitizeUser({ ...d1NormalizeUserRow(row), tenant_id: DEFAULT_TENANT_ID }));
 }
 
-async function createUserStore({ username, password, role }) {
+async function createUserStore({ username, password, role, tenantId = DEFAULT_TENANT_ID }) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
   if (!D1_USERS_ENABLED) {
-    return createUser({ username, password, role });
+    return createUser({ username, password, role, tenantId: normalizedTenantId });
+  }
+  if (normalizedTenantId !== DEFAULT_TENANT_ID) {
+    throw new Error("Tenant-scoped users with D1 are not enabled for this build.");
   }
   const normalizedUsername = normalizeUsername(username);
   if (!/^[a-z0-9._-]{3,64}$/.test(normalizedUsername)) {
@@ -1283,6 +1717,13 @@ async function createUserStore({ username, password, role }) {
     throw new Error("Role must be admin or user.");
   }
 
+  const maxUsers = getTenantPlanLimits(DEFAULT_TENANT_ID).max_users;
+  const countRows = await d1Query("SELECT COUNT(1) AS count FROM users");
+  const totalUsers = Number(countRows[0]?.count || 0);
+  if (COMMERCIAL_ENFORCEMENTS_ENABLED && totalUsers >= maxUsers) {
+    throw new Error(`User limit reached for current plan (${maxUsers}).`);
+  }
+
   const existing = await d1Query("SELECT id FROM users WHERE username = ? LIMIT 1", [normalizedUsername]);
   if (existing.length) {
     throw new Error("Username already exists.");
@@ -1291,6 +1732,7 @@ async function createUserStore({ username, password, role }) {
   const now = new Date().toISOString();
   const user = {
     id: crypto.randomUUID(),
+    tenant_id: DEFAULT_TENANT_ID,
     username: normalizedUsername,
     role,
     password_hash: bcrypt.hashSync(password, 12),
@@ -1306,9 +1748,13 @@ async function createUserStore({ username, password, role }) {
   return sanitizeUser(user);
 }
 
-async function updateUserPasswordStore({ username, password }) {
+async function updateUserPasswordStore({ username, password, tenantId = DEFAULT_TENANT_ID }) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
   if (!D1_USERS_ENABLED) {
-    return updateUserPassword({ username, password });
+    return updateUserPassword({ username, password, tenantId: normalizedTenantId });
+  }
+  if (normalizedTenantId !== DEFAULT_TENANT_ID) {
+    throw new Error("Tenant-scoped users with D1 are not enabled for this build.");
   }
   if (!password || password.length < 10) {
     throw new Error("Password must be at least 10 characters.");
@@ -1330,14 +1776,19 @@ async function updateUserPasswordStore({ username, password }) {
   ]);
   return sanitizeUser({
     ...existing,
+    tenant_id: DEFAULT_TENANT_ID,
     password_hash: passwordHash,
     updated_at: now
   });
 }
 
-async function updateUserLastMediaUrlStore({ username, mediaUrl }) {
+async function updateUserLastMediaUrlStore({ username, mediaUrl, tenantId = DEFAULT_TENANT_ID }) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
   if (!D1_USERS_ENABLED) {
-    return updateUserLastMediaUrl({ username, mediaUrl });
+    return updateUserLastMediaUrl({ username, mediaUrl, tenantId: normalizedTenantId });
+  }
+  if (normalizedTenantId !== DEFAULT_TENANT_ID) {
+    throw new Error("Tenant-scoped users with D1 are not enabled for this build.");
   }
   const normalizedUsername = normalizeUsername(username);
   const existingRows = await d1Query("SELECT * FROM users WHERE username = ? LIMIT 1", [normalizedUsername]);
@@ -1354,9 +1805,21 @@ async function updateUserLastMediaUrlStore({ username, mediaUrl }) {
   ]);
   return sanitizeUser({
     ...existing,
+    tenant_id: DEFAULT_TENANT_ID,
     last_media_url: mediaUrl || "",
     updated_at: now
   });
+}
+
+async function updateUserMfaStore({ username, enabled, tenantId = DEFAULT_TENANT_ID }) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  if (!D1_USERS_ENABLED) {
+    return updateUserMfa({ username, enabled, tenantId: normalizedTenantId });
+  }
+  if (normalizedTenantId !== DEFAULT_TENANT_ID) {
+    throw new Error("Tenant-scoped users with D1 are not enabled for this build.");
+  }
+  throw new Error("MFA settings in D1 user mode are not available in this build.");
 }
 
 async function ensureD1AdminUser() {
@@ -1400,6 +1863,10 @@ async function syncLocalUsersToD1() {
   const remoteSet = new Set(remoteRows.map((row) => normalizeUsername(row.username)));
 
   for (const localUser of localUsers) {
+    const tenantId = normalizeTenantId(localUser.tenant_id);
+    if (tenantId !== DEFAULT_TENANT_ID) {
+      continue;
+    }
     const username = normalizeUsername(localUser.username);
     if (!username || remoteSet.has(username)) {
       continue;
@@ -1425,7 +1892,8 @@ async function syncLocalUsersToD1() {
   }
 }
 
-function listContacts({ search = "", tag = "" } = {}) {
+function listContacts({ search = "", tag = "", tenantId = DEFAULT_TENANT_ID } = {}) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
   const store = readContactsStore();
   const searchTerm = (search || "").toString().trim().toLowerCase();
   const selectedTag = (tag || "").toString().trim().toLowerCase();
@@ -1433,6 +1901,9 @@ function listContacts({ search = "", tag = "" } = {}) {
   return Object.values(store.items)
     .map((contact) => normalizeContactRecord(contact))
     .filter((contact) => {
+      if (normalizeTenantId(contact.tenant_id) !== normalizedTenantId) {
+        return false;
+      }
       if (selectedTag && !normalizeTags(contact.tags).includes(selectedTag)) {
         return false;
       }
@@ -1456,8 +1927,8 @@ function listContacts({ search = "", tag = "" } = {}) {
     .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
 }
 
-function listContactTags() {
-  const contacts = listContacts({});
+function listContactTags(tenantId = DEFAULT_TENANT_ID) {
+  const contacts = listContacts({ tenantId });
   const tags = new Set();
   contacts.forEach((contact) => {
     normalizeTags(contact.tags).forEach((tag) => tags.add(tag));
@@ -1465,17 +1936,22 @@ function listContactTags() {
   return Array.from(tags).sort();
 }
 
-function createContact({ name, fax_number, tags, email, notes }) {
+function createContact({ name, fax_number, tags, email, notes, tenantId = DEFAULT_TENANT_ID }) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
   const faxNumber = normalizeE164(fax_number);
   if (!isE164(faxNumber)) {
     throw new Error("fax_number must be E.164 format, for example +17145551234.");
   }
 
   const store = readContactsStore();
-  if (contactCount(store) >= MAX_CONTACTS) {
-    throw new Error(`Contact limit reached (${MAX_CONTACTS}). Remove contacts before adding new ones.`);
+  const tenantContacts = Object.values(store.items || {}).filter(
+    (item) => normalizeTenantId(item.tenant_id) === normalizedTenantId
+  );
+  const maxContacts = getTenantPlanLimits(normalizedTenantId).max_contacts;
+  if (COMMERCIAL_ENFORCEMENTS_ENABLED && tenantContacts.length >= maxContacts) {
+    throw new Error(`Contact limit reached for current plan (${maxContacts}). Remove contacts before adding new ones.`);
   }
-  const exists = Object.values(store.items).some((item) => item.fax_number === faxNumber);
+  const exists = tenantContacts.some((item) => item.fax_number === faxNumber);
   if (exists) {
     throw new Error("A contact with that fax number already exists.");
   }
@@ -1483,6 +1959,7 @@ function createContact({ name, fax_number, tags, email, notes }) {
   const now = new Date().toISOString();
   const contact = {
     id: crypto.randomUUID(),
+    tenant_id: normalizedTenantId,
     name: (name || "").toString().trim() || faxNumber,
     fax_number: faxNumber,
     tags: normalizeTags(tags),
@@ -1503,10 +1980,11 @@ function createContact({ name, fax_number, tags, email, notes }) {
   return contact;
 }
 
-function updateContact(contactId, patch) {
+function updateContact(contactId, patch, tenantId = DEFAULT_TENANT_ID) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
   const store = readContactsStore();
   const existing = store.items[contactId];
-  if (!existing) {
+  if (!existing || normalizeTenantId(existing.tenant_id) !== normalizedTenantId) {
     throw new Error("Contact not found.");
   }
 
@@ -1520,7 +1998,10 @@ function updateContact(contactId, patch) {
       throw new Error("fax_number must be E.164 format.");
     }
     const duplicate = Object.values(store.items).some(
-      (item) => item.id !== contactId && item.fax_number === faxNumber
+      (item) =>
+        item.id !== contactId &&
+        normalizeTenantId(item.tenant_id) === normalizedTenantId &&
+        item.fax_number === faxNumber
     );
     if (duplicate) {
       throw new Error("Another contact already uses this fax number.");
@@ -1547,16 +2028,18 @@ function updateContact(contactId, patch) {
   return next;
 }
 
-function deleteContact(contactId) {
+function deleteContact(contactId, tenantId = DEFAULT_TENANT_ID) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
   const store = readContactsStore();
-  if (!store.items[contactId]) {
+  if (!store.items[contactId] || normalizeTenantId(store.items[contactId].tenant_id) !== normalizedTenantId) {
     throw new Error("Contact not found.");
   }
   delete store.items[contactId];
   writeContactsStore(store);
 }
 
-function importContactsFromCsv(csvText) {
+function importContactsFromCsv(csvText, tenantId = DEFAULT_TENANT_ID) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
   const records = parseCsv(csvText, {
     columns: true,
     bom: true,
@@ -1566,7 +2049,9 @@ function importContactsFromCsv(csvText) {
 
   const store = readContactsStore();
   const existingByFax = new Map(
-    Object.values(store.items).map((item) => [item.fax_number, item])
+    Object.values(store.items)
+      .filter((item) => normalizeTenantId(item.tenant_id) === normalizedTenantId)
+      .map((item) => [item.fax_number, item])
   );
 
   const result = {
@@ -1610,14 +2095,19 @@ function importContactsFromCsv(csvText) {
       return;
     }
 
-    if (contactCount(store) >= MAX_CONTACTS) {
+    const tenantContactCount = Object.values(store.items || {}).filter(
+      (item) => normalizeTenantId(item.tenant_id) === normalizedTenantId
+    ).length;
+    const maxContacts = getTenantPlanLimits(normalizedTenantId).max_contacts;
+    if (COMMERCIAL_ENFORCEMENTS_ENABLED && tenantContactCount >= maxContacts) {
       result.skipped += 1;
-      result.errors.push(`Row ${index + 2}: contact limit reached (${MAX_CONTACTS}).`);
+      result.errors.push(`Row ${index + 2}: contact limit reached (${maxContacts}).`);
       return;
     }
 
     const contact = {
       id: crypto.randomUUID(),
+      tenant_id: normalizedTenantId,
       name: (row.name || row.full_name || faxNumber).toString().trim(),
       fax_number: faxNumber,
       tags,
@@ -1637,11 +2127,13 @@ function importContactsFromCsv(csvText) {
   return result;
 }
 
-function createBulkJob({ created_by, media_url, tag_filters, tag_mode, contacts }) {
+function createBulkJob({ created_by, media_url, tag_filters, tag_mode, contacts, tenantId = DEFAULT_TENANT_ID }) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
   const store = readBulkJobsStore();
   const now = new Date().toISOString();
   const job = {
     id: crypto.randomUUID(),
+    tenant_id: normalizedTenantId,
     created_by,
     media_url,
     tag_filters: normalizeTags(tag_filters),
@@ -1669,10 +2161,11 @@ function createBulkJob({ created_by, media_url, tag_filters, tag_mode, contacts 
   return job;
 }
 
-function updateBulkJob(jobId, updater) {
+function updateBulkJob(jobId, updater, tenantId = DEFAULT_TENANT_ID) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
   const store = readBulkJobsStore();
   const existing = store.items[jobId];
-  if (!existing) {
+  if (!existing || normalizeTenantId(existing.tenant_id) !== normalizedTenantId) {
     return null;
   }
   const next = updater({ ...existing });
@@ -1699,18 +2192,19 @@ async function processQueuedBulkJobs() {
         break;
       }
 
-      const cfg = getRuntimeConfig();
+      const tenantId = normalizeTenantId(nextJob.tenant_id);
+      const cfg = getRuntimeConfig(tenantId);
       if (!cfg.telnyx_api_key || !cfg.telnyx_connection_id || !cfg.telnyx_from_number) {
         updateBulkJob(nextJob.id, (job) => ({
           ...job,
           status: "failed",
           completed_at: new Date().toISOString(),
           error: "Missing Telnyx settings."
-        }));
+        }), tenantId);
         continue;
       }
 
-      updateBulkJob(nextJob.id, (job) => ({ ...job, status: "running", error: null }));
+      updateBulkJob(nextJob.id, (job) => ({ ...job, status: "running", error: null }), tenantId);
 
       for (const contact of nextJob.contacts) {
         try {
@@ -1736,8 +2230,8 @@ async function processQueuedBulkJobs() {
             contact_name: contact.name,
             contact_tags: normalizeTags(contact.tags),
             bulk_job_id: nextJob.id
-          });
-          appendEvent(fax.id, "fax.queued", fax);
+          }, nextJob.tenant_id);
+          appendEvent(fax.id, "fax.queued", fax, nextJob.tenant_id);
 
           let copyResult = { sent: false, reason: "not_attempted" };
           try {
@@ -1753,7 +2247,7 @@ async function processQueuedBulkJobs() {
             copyResult = { sent: false, reason: copyError.message || "copy_email_failed" };
           }
 
-          markContactsUsedByFaxNumbers([contact.fax_number]);
+          markContactsUsedByFaxNumbers([contact.fax_number], nextJob.tenant_id);
 
           updateBulkJob(nextJob.id, (job) => {
             const results = Array.isArray(job.results) ? job.results : [];
@@ -1777,7 +2271,7 @@ async function processQueuedBulkJobs() {
               },
               results
             };
-          });
+          }, tenantId);
         } catch (error) {
           updateBulkJob(nextJob.id, (job) => {
             const results = Array.isArray(job.results) ? job.results : [];
@@ -1799,7 +2293,7 @@ async function processQueuedBulkJobs() {
               },
               results
             };
-          });
+          }, tenantId);
         }
       }
 
@@ -1807,18 +2301,20 @@ async function processQueuedBulkJobs() {
         ...job,
         status: "completed",
         completed_at: new Date().toISOString()
-      }));
+      }), tenantId);
     }
   } finally {
     isBulkProcessorRunning = false;
   }
 }
 
-function upsertFax(faxId, patch) {
+function upsertFax(faxId, patch, tenantId = DEFAULT_TENANT_ID) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
   const store = readStore();
   const existing = store.items[faxId] || { id: faxId, events: [] };
   store.items[faxId] = {
     ...existing,
+    tenant_id: normalizedTenantId,
     ...patch,
     updated_at: new Date().toISOString()
   };
@@ -1827,7 +2323,21 @@ function upsertFax(faxId, patch) {
   return store.items[faxId];
 }
 
-function appendEvent(faxId, eventType, payload) {
+function getFaxTenantId(faxId, fallbackTenantId = DEFAULT_TENANT_ID) {
+  if (!faxId) return normalizeTenantId(fallbackTenantId);
+  const store = readStore();
+  if (store.items?.[faxId]) {
+    return normalizeTenantId(store.items[faxId].tenant_id);
+  }
+  const archive = readArchiveStore();
+  if (archive.items?.[faxId]) {
+    return normalizeTenantId(archive.items[faxId].tenant_id);
+  }
+  return normalizeTenantId(fallbackTenantId);
+}
+
+function appendEvent(faxId, eventType, payload, tenantId = DEFAULT_TENANT_ID) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
   const store = readStore();
   const existing = store.items[faxId] || { id: faxId, events: [] };
   const events = Array.isArray(existing.events) ? existing.events : [];
@@ -1838,6 +2348,7 @@ function appendEvent(faxId, eventType, payload) {
   });
   store.items[faxId] = {
     ...existing,
+    tenant_id: normalizedTenantId,
     events,
     updated_at: new Date().toISOString()
   };
@@ -1853,10 +2364,15 @@ function sortFaxItemsDesc(items) {
   });
 }
 
-function rotateFaxStoreToVisibleLimit(limit = FAX_HISTORY_VISIBLE_LIMIT) {
+function rotateFaxStoreToVisibleLimit(limit = FAX_HISTORY_VISIBLE_LIMIT, tenantId = DEFAULT_TENANT_ID) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
   const maxVisible = Math.max(1, Number(limit) || FAX_HISTORY_VISIBLE_LIMIT);
   const store = readStore();
-  const sorted = sortFaxItemsDesc(Object.values(store.items || {}));
+  const sorted = sortFaxItemsDesc(
+    Object.values(store.items || {}).filter(
+      (item) => normalizeTenantId(item.tenant_id) === normalizedTenantId
+    )
+  );
   if (sorted.length <= maxVisible) {
     return;
   }
@@ -1870,6 +2386,7 @@ function rotateFaxStoreToVisibleLimit(limit = FAX_HISTORY_VISIBLE_LIMIT) {
     archive.items[item.id] = {
       ...(archive.items[item.id] || {}),
       ...item,
+      tenant_id: normalizedTenantId,
       archived_at: new Date().toISOString()
     };
   });
@@ -1877,7 +2394,7 @@ function rotateFaxStoreToVisibleLimit(limit = FAX_HISTORY_VISIBLE_LIMIT) {
   const keepIds = new Set(keep.map((item) => item.id));
   const nextItems = {};
   Object.entries(store.items || {}).forEach(([id, item]) => {
-    if (keepIds.has(id)) {
+    if (normalizeTenantId(item.tenant_id) !== normalizedTenantId || keepIds.has(id)) {
       nextItems[id] = item;
     }
   });
@@ -1903,8 +2420,8 @@ function parseWebhook(reqBody) {
   };
 }
 
-function getRuntimeConfig() {
-  const cfg = readConfig();
+function getRuntimeConfig(tenantId = DEFAULT_TENANT_ID) {
+  const cfg = readConfig(tenantId);
   return {
     telnyx_api_key: cfg.telnyx_api_key || "",
     telnyx_connection_id: cfg.telnyx_connection_id || "",
@@ -1920,12 +2437,13 @@ function getRuntimeConfig() {
     smtp_secure: process.env.SMTP_SECURE === "true",
     smtp_user: process.env.SMTP_USER || "",
     smtp_pass: process.env.SMTP_PASS || "",
-    smtp_from: process.env.SMTP_FROM || process.env.SMTP_USER || ""
+    smtp_from: process.env.SMTP_FROM || process.env.SMTP_USER || "",
+    tenant_id: normalizeTenantId(tenantId)
   };
 }
 
-function requireConfig(res) {
-  const cfg = getRuntimeConfig();
+function requireConfig(res, tenantId = DEFAULT_TENANT_ID) {
+  const cfg = getRuntimeConfig(tenantId);
   if (!cfg.telnyx_api_key || !cfg.telnyx_connection_id || !cfg.telnyx_from_number) {
     res.status(500).json({
       error:
@@ -2235,8 +2753,22 @@ function requireAdmin(req, res, next) {
   if (!req.session.user || req.session.user.role !== "admin") {
     return res.status(403).json({ error: "Admin access required." });
   }
+  if (normalizeTenantId(req.session.user.tenant_id) !== normalizeTenantId(req.tenant_id)) {
+    return res.status(403).json({ error: "Admin access required for active tenant." });
+  }
   return next();
 }
+
+app.use((req, res, next) => {
+  req.tenant_id = getTenantIdFromRequest(req);
+  ensureTenantExists(req.tenant_id);
+  if (D1_USERS_ENABLED && normalizeTenantId(req.tenant_id) !== DEFAULT_TENANT_ID) {
+    return res.status(503).json({
+      error: "Tenant-scoped auth with D1 is not enabled. Use local user store or default tenant."
+    });
+  }
+  return next();
+});
 
 app.use("/api", (req, res, next) => {
   const openRoutes = new Set([
@@ -2252,35 +2784,73 @@ app.use("/api", (req, res, next) => {
   if (!req.session.user) {
     return res.status(401).json({ error: "Login required." });
   }
+  if (normalizeTenantId(req.session.user.tenant_id) !== normalizeTenantId(req.tenant_id)) {
+    return res.status(403).json({ error: "Tenant mismatch." });
+  }
   return next();
 });
 
 app.post("/api/auth/login", async (req, res) => {
   try {
+    const tenantId = normalizeTenantId(req.tenant_id);
+    const tenant = ensureTenantExists(tenantId);
+    if (tenant.active === false) {
+      return res.status(403).json({ error: "Tenant is suspended." });
+    }
     const username = normalizeUsername(req.body.username);
     const password = req.body.password || "";
     const clientIp = getAuthClientIp(req);
     const protectionStatus = getAuthProtectionStatus({ ip: clientIp, username });
     if (protectionStatus.blocked) {
+      appendAuditEvent({
+        tenantId,
+        actorUsername: username || "unknown",
+        actorRole: "anonymous",
+        action: "auth.login.blocked",
+        targetType: "user",
+        targetId: username || "",
+        ipAddress: clientIp,
+        metadata: { reason: protectionStatus.error }
+      });
       return res.status(protectionStatus.status || 429).json({ error: protectionStatus.error });
     }
-    const user = await getUserByUsernameStore(username);
+    const user = await getUserByUsernameStore(username, tenantId);
 
     if (!user || !verifyUserPassword(user, password)) {
       registerFailedAuthAttempt({ ip: clientIp, username });
+      appendAuditEvent({
+        tenantId,
+        actorUsername: username || "unknown",
+        actorRole: "anonymous",
+        action: "auth.login.failed",
+        targetType: "user",
+        targetId: username || "",
+        ipAddress: clientIp,
+        metadata: {}
+      });
       return res.status(401).json({ error: "Invalid username or password." });
     }
 
     if (!user.password_hash && typeof user.password === "string") {
       try {
-        await updateUserPasswordStore({ username: user.username, password });
+        await updateUserPasswordStore({ username: user.username, password, tenantId });
       } catch (error) {
         // keep login successful even if migration write fails
       }
     }
 
-    req.session.user = sanitizeUser(user);
+    req.session.user = sanitizeUser({ ...user, tenant_id: tenantId });
     clearAuthAttemptState({ ip: clientIp, username });
+    appendAuditEvent({
+      tenantId,
+      actorUsername: user.username,
+      actorRole: user.role,
+      action: "auth.login.success",
+      targetType: "user",
+      targetId: user.id,
+      ipAddress: clientIp,
+      metadata: {}
+    });
     return res.json({ user: req.session.user });
   } catch (error) {
     return res.status(400).json({ error: error.message || "Login failed." });
@@ -2288,6 +2858,20 @@ app.post("/api/auth/login", async (req, res) => {
 });
 
 app.post("/api/auth/logout", (req, res) => {
+  const tenantId = normalizeTenantId(req.tenant_id);
+  const actor = req.session.user;
+  if (actor) {
+    appendAuditEvent({
+      tenantId,
+      actorUsername: actor.username,
+      actorRole: actor.role,
+      action: "auth.logout",
+      targetType: "user",
+      targetId: actor.id,
+      ipAddress: getAuthClientIp(req),
+      metadata: {}
+    });
+  }
   req.session.destroy(() => {
     res.json({ ok: true });
   });
@@ -2297,18 +2881,22 @@ app.get("/api/auth/me", (req, res) => {
   if (!req.session.user) {
     return res.json({ authenticated: false });
   }
+  if (normalizeTenantId(req.session.user.tenant_id) !== normalizeTenantId(req.tenant_id)) {
+    return res.json({ authenticated: false, tenant_mismatch: true });
+  }
   return res.json({ authenticated: true, user: req.session.user });
 });
 
 app.patch("/api/me/last-media-url", async (req, res) => {
   try {
+    const tenantId = normalizeTenantId(req.tenant_id);
     const username = req.session.user?.username;
     const mediaUrl = (req.body.media_url || "").trim();
     if (mediaUrl && !mediaUrl.startsWith("https://")) {
       return res.status(400).json({ error: "media_url must start with https://." });
     }
 
-    const user = await updateUserLastMediaUrlStore({ username, mediaUrl });
+    const user = await updateUserLastMediaUrlStore({ username, mediaUrl, tenantId });
     req.session.user = user;
     return res.json({ user });
   } catch (error) {
@@ -2318,16 +2906,27 @@ app.patch("/api/me/last-media-url", async (req, res) => {
 
 app.post("/api/auth/change-password", async (req, res) => {
   try {
+    const tenantId = normalizeTenantId(req.tenant_id);
     const username = req.session.user?.username;
     const currentPassword = req.body.current_password || "";
     const newPassword = req.body.new_password || "";
-    const user = await getUserByUsernameStore(username);
+    const user = await getUserByUsernameStore(username, tenantId);
 
     if (!user || !verifyUserPassword(user, currentPassword)) {
       return res.status(400).json({ error: "Current password is incorrect." });
     }
 
-    await updateUserPasswordStore({ username, password: newPassword });
+    await updateUserPasswordStore({ username, password: newPassword, tenantId });
+    appendAuditEvent({
+      tenantId,
+      actorUsername: username,
+      actorRole: req.session.user?.role || "user",
+      action: "auth.password.changed",
+      targetType: "user",
+      targetId: user?.id || "",
+      ipAddress: getAuthClientIp(req),
+      metadata: {}
+    });
     return res.json({ ok: true });
   } catch (error) {
     return res.status(400).json({ error: error.message || "Could not change password." });
@@ -2335,7 +2934,8 @@ app.post("/api/auth/change-password", async (req, res) => {
 });
 
 app.get("/api/health", (req, res) => {
-  const cfg = getRuntimeConfig();
+  const tenantId = normalizeTenantId(req.tenant_id);
+  const cfg = getRuntimeConfig(tenantId);
   const isPersistentDataPath = DATA_DIR.startsWith(`${RENDER_PERSISTENT_ROOT}/`);
   res.json({
     ok: true,
@@ -2360,13 +2960,24 @@ app.get("/api/health", (req, res) => {
       lockout_threshold: AUTH_LOCKOUT_THRESHOLD,
       lockout_ms: AUTH_LOCKOUT_MS
     },
-    session_store_mode: SESSION_STORE_MODE
+    session_store_mode: SESSION_STORE_MODE,
+    commercial: {
+      multi_tenant_enabled: MULTI_TENANT_ENABLED,
+      commercial_enforcements_enabled: COMMERCIAL_ENFORCEMENTS_ENABLED,
+      default_tenant_id: DEFAULT_TENANT_ID,
+      active_tenant_id: tenantId,
+      idempotency_ttl_seconds: IDEMPOTENCY_TTL_SECONDS
+    }
   });
 });
 
 app.get("/api/settings", (req, res) => {
-  const cfg = getRuntimeConfig();
+  const tenantId = normalizeTenantId(req.tenant_id);
+  const cfg = getRuntimeConfig(tenantId);
+  const billing = getTenantBilling(tenantId);
   return res.json({
+    tenant_id: tenantId,
+    plan: billing.plan,
     outbound_copy_enabled: cfg.outbound_copy_enabled !== false,
     outbound_copy_email: cfg.outbound_copy_email || "eyecarecenteroc@gmail.com",
     office_name: cfg.office_name || "Eyecare Care of Orange County",
@@ -2376,10 +2987,11 @@ app.get("/api/settings", (req, res) => {
 });
 
 app.get("/api/faxes", async (req, res) => {
+  const tenantId = normalizeTenantId(req.tenant_id);
   const limit = Math.max(1, Math.min(Number(req.query.limit || FAX_HISTORY_VISIBLE_LIMIT), 100));
   let syncWarning = "";
   try {
-    const cfg = getRuntimeConfig();
+    const cfg = getRuntimeConfig(tenantId);
     if (cfg.telnyx_api_key) {
       const remote = await telnyxListFaxes({ apiKey: cfg.telnyx_api_key, pageSize: limit });
       const remoteItems = Array.isArray(remote) ? remote : [];
@@ -2397,9 +3009,9 @@ app.get("/api/faxes", async (req, res) => {
           telnyx_updated_at: fax.updated_at,
           page_count: fax.page_count || null,
           created_at: fax.created_at
-        });
+        }, tenantId);
       });
-      rotateFaxStoreToVisibleLimit(FAX_HISTORY_VISIBLE_LIMIT);
+      rotateFaxStoreToVisibleLimit(FAX_HISTORY_VISIBLE_LIMIT, tenantId);
     }
   } catch (error) {
     // Non-blocking: return local store if Telnyx sync fails.
@@ -2409,8 +3021,8 @@ app.get("/api/faxes", async (req, res) => {
   const store = readStore();
   const archive = readArchiveStore();
   const merged = sortFaxItemsDesc([
-    ...Object.values(store.items || {}),
-    ...Object.values(archive.items || {})
+    ...Object.values(store.items || {}).filter((item) => normalizeTenantId(item.tenant_id) === tenantId),
+    ...Object.values(archive.items || {}).filter((item) => normalizeTenantId(item.tenant_id) === tenantId)
   ]);
   const deduped = [];
   const seenIds = new Set();
@@ -2427,15 +3039,19 @@ app.get("/api/faxes", async (req, res) => {
 });
 
 app.get("/api/faxes/archive", requireAdmin, (req, res) => {
+  const tenantId = normalizeTenantId(req.tenant_id);
   const limit = Math.max(1, Math.min(Number(req.query.limit || 500), 2000));
   const archive = readArchiveStore();
-  const items = sortFaxItemsDesc(Object.values(archive.items || {})).slice(0, limit);
+  const items = sortFaxItemsDesc(
+    Object.values(archive.items || {}).filter((item) => normalizeTenantId(item.tenant_id) === tenantId)
+  ).slice(0, limit);
   return res.json({ items, updated_at: archive.updated_at, limit });
 });
 
 app.post("/api/faxes", async (req, res) => {
   try {
-    const cfg = requireConfig(res);
+    const tenantId = normalizeTenantId(req.tenant_id);
+    const cfg = requireConfig(res, tenantId);
     if (!cfg) {
       return;
     }
@@ -2461,9 +3077,13 @@ app.post("/api/faxes", async (req, res) => {
         error: `Invalid destination number: ${invalidNumber}. Use E.164 format, for example +17145551234.`
       });
     }
-    if (toNumbers.length > MAX_SEND_RECIPIENTS) {
+    const maxRecipients = Math.min(
+      MAX_SEND_RECIPIENTS,
+      getTenantPlanLimits(tenantId).max_recipients_per_send
+    );
+    if (toNumbers.length > maxRecipients) {
       return res.status(400).json({
-        error: `Too many recipients. Maximum is ${MAX_SEND_RECIPIENTS} per send request.`
+        error: `Too many recipients. Maximum is ${maxRecipients} per send request for your plan.`
       });
     }
     if (!mediaUrls.length) {
@@ -2476,6 +3096,22 @@ app.post("/api/faxes", async (req, res) => {
       return res.status(400).json({
         error: `Invalid media URL: ${invalidMediaUrl}. Media URLs must be public https links reachable by Telnyx.`
       });
+    }
+
+    const idempotencyKey = (req.get("Idempotency-Key") || "").toString().trim();
+    if (idempotencyKey) {
+      const cached = getIdempotentResponse({
+        tenantId,
+        key: idempotencyKey,
+        method: req.method,
+        path: req.path
+      });
+      if (cached) {
+        return res.status(cached.status_code || 200).json({
+          ...(cached.response_body || {}),
+          idempotent_replay: true
+        });
+      }
     }
 
     const requestedBy = req.session.user?.username || "unknown";
@@ -2527,8 +3163,8 @@ app.post("/api/faxes", async (req, res) => {
           failure_reason: null,
           telnyx_updated_at: fax.updated_at,
           created_at: fax.created_at
-        });
-        appendEvent(fax.id, "fax.queued", fax);
+        }, tenantId);
+        appendEvent(fax.id, "fax.queued", fax, tenantId);
 
         let copyResult = { sent: false, reason: "not_attempted" };
         try {
@@ -2573,15 +3209,26 @@ app.post("/api/faxes", async (req, res) => {
 
     if (!faxIds.length) {
       const firstError = results.find((item) => item.error)?.error || "Failed to send fax.";
+      appendAuditEvent({
+        tenantId,
+        actorUsername: requestedBy,
+        actorRole: req.session.user?.role || "user",
+        action: "fax.send.failed",
+        targetType: "fax",
+        targetId: "",
+        ipAddress: getAuthClientIp(req),
+        metadata: { error: firstError, recipients: toNumbers.length }
+      });
       return res.status(400).json({ error: firstError, results });
     }
 
-    markContactsUsedByFaxNumbers(queuedRecipients);
+    markContactsUsedByFaxNumbers(queuedRecipients, tenantId);
 
     try {
       const updatedUser = await updateUserLastMediaUrlStore({
         username: req.session.user?.username,
-        mediaUrl: mediaUrls[0]
+        mediaUrl: mediaUrls[0],
+        tenantId
       });
       req.session.user = updatedUser;
     } catch (error) {
@@ -2589,7 +3236,7 @@ app.post("/api/faxes", async (req, res) => {
     }
     const firstQueuedResult = results.find((item) => item.queued);
     const failedCount = results.filter((item) => !item.queued).length;
-    return res.status(202).json({
+    const responseBody = {
       fax_id: firstQueuedResult?.fax_id || null,
       fax_ids: faxIds,
       queued_count: faxIds.length,
@@ -2600,37 +3247,75 @@ app.post("/api/faxes", async (req, res) => {
       copy_email_sent: firstQueuedResult?.copy_email_sent || false,
       copy_email_reason: firstQueuedResult?.copy_email_reason || "not_attempted",
       results
+    };
+    if (idempotencyKey) {
+      saveIdempotentResponse({
+        tenantId,
+        key: idempotencyKey,
+        method: req.method,
+        path: req.path,
+        statusCode: 202,
+        responseBody
+      });
+    }
+    appendAuditEvent({
+      tenantId,
+      actorUsername: requestedBy,
+      actorRole: req.session.user?.role || "user",
+      action: "fax.send.queued",
+      targetType: "fax",
+      targetId: faxIds[0] || "",
+      ipAddress: getAuthClientIp(req),
+      metadata: { queued_count: faxIds.length, failed_count: failedCount }
     });
+    return res.status(202).json(responseBody);
   } catch (error) {
     return res.status(400).json({ error: error.message || "Failed to send fax." });
   }
 });
 
 app.get("/api/contacts", (req, res) => {
+  const tenantId = normalizeTenantId(req.tenant_id);
   const items = listContacts({
     search: req.query.search || "",
-    tag: req.query.tag || ""
+    tag: req.query.tag || "",
+    tenantId
   });
-  return res.json({ items, total: items.length, max_contacts: MAX_CONTACTS });
+  const maxContacts = getTenantPlanLimits(tenantId).max_contacts;
+  return res.json({ items, total: items.length, max_contacts: maxContacts });
 });
 
 app.get("/api/contacts/tags", (req, res) => {
-  return res.json({ items: listContactTags() });
+  const tenantId = normalizeTenantId(req.tenant_id);
+  return res.json({ items: listContactTags(tenantId) });
 });
 
 app.get("/api/contacts/frequent", (req, res) => {
+  const tenantId = normalizeTenantId(req.tenant_id);
   const limit = Number(req.query.limit || 5);
-  return res.json({ items: listFrequentContacts(limit) });
+  return res.json({ items: listFrequentContacts(limit, tenantId) });
 });
 
 app.post("/api/contacts", (req, res) => {
   try {
+    const tenantId = normalizeTenantId(req.tenant_id);
     const created = createContact({
       name: req.body.name,
       fax_number: req.body.fax_number,
       tags: req.body.tags,
       email: req.body.email,
-      notes: req.body.notes
+      notes: req.body.notes,
+      tenantId
+    });
+    appendAuditEvent({
+      tenantId,
+      actorUsername: req.session.user?.username || "unknown",
+      actorRole: req.session.user?.role || "user",
+      action: "contact.created",
+      targetType: "contact",
+      targetId: created.id,
+      ipAddress: getAuthClientIp(req),
+      metadata: { fax_number: created.fax_number }
     });
     return res.status(201).json(created);
   } catch (error) {
@@ -2640,12 +3325,23 @@ app.post("/api/contacts", (req, res) => {
 
 app.patch("/api/contacts/:id", (req, res) => {
   try {
+    const tenantId = normalizeTenantId(req.tenant_id);
     const updated = updateContact(req.params.id, {
       name: req.body.name,
       fax_number: req.body.fax_number,
       tags: req.body.tags,
       email: req.body.email,
       notes: req.body.notes
+    }, tenantId);
+    appendAuditEvent({
+      tenantId,
+      actorUsername: req.session.user?.username || "unknown",
+      actorRole: req.session.user?.role || "user",
+      action: "contact.updated",
+      targetType: "contact",
+      targetId: updated.id,
+      ipAddress: getAuthClientIp(req),
+      metadata: {}
     });
     return res.json(updated);
   } catch (error) {
@@ -2655,7 +3351,18 @@ app.patch("/api/contacts/:id", (req, res) => {
 
 app.delete("/api/contacts/:id", (req, res) => {
   try {
-    deleteContact(req.params.id);
+    const tenantId = normalizeTenantId(req.tenant_id);
+    deleteContact(req.params.id, tenantId);
+    appendAuditEvent({
+      tenantId,
+      actorUsername: req.session.user?.username || "unknown",
+      actorRole: req.session.user?.role || "user",
+      action: "contact.deleted",
+      targetType: "contact",
+      targetId: req.params.id,
+      ipAddress: getAuthClientIp(req),
+      metadata: {}
+    });
     return res.json({ ok: true });
   } catch (error) {
     return res.status(400).json({ error: error.message || "Could not delete contact." });
@@ -2675,8 +3382,19 @@ app.post("/api/contacts/import", (req, res) => {
     }
 
     try {
+      const tenantId = normalizeTenantId(req.tenant_id);
       const csvText = req.file.buffer.toString("utf8");
-      const summary = importContactsFromCsv(csvText);
+      const summary = importContactsFromCsv(csvText, tenantId);
+      appendAuditEvent({
+        tenantId,
+        actorUsername: req.session.user?.username || "unknown",
+        actorRole: req.session.user?.role || "user",
+        action: "contact.imported",
+        targetType: "contact",
+        targetId: "",
+        ipAddress: getAuthClientIp(req),
+        metadata: summary
+      });
       return res.json(summary);
     } catch (parseError) {
       return res.status(400).json({
@@ -2690,7 +3408,8 @@ app.post("/api/contacts/import", (req, res) => {
 
 app.post("/api/faxes/bulk", async (req, res) => {
   try {
-    const cfg = requireConfig(res);
+    const tenantId = normalizeTenantId(req.tenant_id);
+    const cfg = requireConfig(res, tenantId);
     if (!cfg) {
       return;
     }
@@ -2705,7 +3424,7 @@ app.post("/api/faxes/bulk", async (req, res) => {
       return res.status(400).json({ error: "media_url must be a public https URL." });
     }
 
-    const allContacts = listContacts({});
+    const allContacts = listContacts({ tenantId });
     let selectedContacts = [];
     if (contactIds.length) {
       const set = new Set(contactIds);
@@ -2727,14 +3446,26 @@ app.post("/api/faxes/bulk", async (req, res) => {
       media_url: mediaUrl,
       tag_filters: tagFilters,
       tag_mode: tagMode,
-      contacts: selectedContacts
+      contacts: selectedContacts,
+      tenantId
     });
 
     const updatedUser = await updateUserLastMediaUrlStore({
       username: req.session.user?.username,
-      mediaUrl
+      mediaUrl,
+      tenantId
     });
     req.session.user = updatedUser;
+    appendAuditEvent({
+      tenantId,
+      actorUsername: req.session.user?.username || "unknown",
+      actorRole: req.session.user?.role || "user",
+      action: "fax.bulk.queued",
+      targetType: "bulk_job",
+      targetId: job.id,
+      ipAddress: getAuthClientIp(req),
+      metadata: { total: job.totals?.total || 0 }
+    });
 
     setImmediate(() => {
       processQueuedBulkJobs().catch(() => {
@@ -2749,17 +3480,19 @@ app.post("/api/faxes/bulk", async (req, res) => {
 });
 
 app.get("/api/faxes/bulk-jobs", (req, res) => {
+  const tenantId = normalizeTenantId(req.tenant_id);
   const store = readBulkJobsStore();
-  const items = Object.values(store.items).sort(
-    (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-  );
+  const items = Object.values(store.items)
+    .filter((job) => normalizeTenantId(job.tenant_id) === tenantId)
+    .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
   return res.json({ items });
 });
 
 app.get("/api/faxes/bulk-jobs/:id", (req, res) => {
+  const tenantId = normalizeTenantId(req.tenant_id);
   const store = readBulkJobsStore();
   const item = store.items[req.params.id];
-  if (!item) {
+  if (!item || normalizeTenantId(item.tenant_id) !== tenantId) {
     return res.status(404).json({ error: "Bulk job not found." });
   }
   return res.json(item);
@@ -2782,9 +3515,11 @@ app.post("/api/uploads", (req, res) => {
 
     const mediaUrl = getPublicMediaUrl(req, req.file.filename);
     try {
+      const tenantId = normalizeTenantId(req.tenant_id);
       const updatedUser = await updateUserLastMediaUrlStore({
         username: req.session.user?.username,
-        mediaUrl
+        mediaUrl,
+        tenantId
       });
       req.session.user = updatedUser;
     } catch (prefError) {
@@ -2822,9 +3557,11 @@ app.post("/api/uploads/batch", (req, res) => {
 
     const mediaUrls = files.map((file) => getPublicMediaUrl(req, file.filename));
     try {
+      const tenantId = normalizeTenantId(req.tenant_id);
       const updatedUser = await updateUserLastMediaUrlStore({
         username: req.session.user?.username,
-        mediaUrl: mediaUrls[0]
+        mediaUrl: mediaUrls[0],
+        tenantId
       });
       req.session.user = updatedUser;
     } catch (prefError) {
@@ -2844,7 +3581,8 @@ app.post("/api/uploads/batch", (req, res) => {
 
 app.post("/api/faxes/:id/refresh", async (req, res) => {
   try {
-    const cfg = requireConfig(res);
+    const tenantId = normalizeTenantId(req.tenant_id);
+    const cfg = requireConfig(res, tenantId);
     if (!cfg) {
       return;
     }
@@ -2860,7 +3598,7 @@ app.post("/api/faxes/:id/refresh", async (req, res) => {
       telnyx_updated_at: fax.updated_at,
       page_count: fax.page_count || null,
       created_at: fax.created_at
-    });
+    }, tenantId);
     return res.json(saved);
   } catch (error) {
     return res.status(400).json({ error: error.message || "Failed to refresh fax status." });
@@ -2869,7 +3607,8 @@ app.post("/api/faxes/:id/refresh", async (req, res) => {
 
 app.get("/api/admin/users", requireAdmin, async (req, res) => {
   try {
-    const items = await listUsersSafeStore();
+    const tenantId = normalizeTenantId(req.tenant_id);
+    const items = await listUsersSafeStore(tenantId);
     return res.json({ items });
   } catch (error) {
     return res.status(400).json({ error: error.message || "Could not load users." });
@@ -2878,10 +3617,22 @@ app.get("/api/admin/users", requireAdmin, async (req, res) => {
 
 app.post("/api/admin/users", requireAdmin, async (req, res) => {
   try {
+    const tenantId = normalizeTenantId(req.tenant_id);
     const created = await createUserStore({
       username: req.body.username,
       password: req.body.password,
-      role: req.body.role || "user"
+      role: req.body.role || "user",
+      tenantId
+    });
+    appendAuditEvent({
+      tenantId,
+      actorUsername: req.session.user?.username || "unknown",
+      actorRole: req.session.user?.role || "admin",
+      action: "admin.user.created",
+      targetType: "user",
+      targetId: created.id,
+      ipAddress: getAuthClientIp(req),
+      metadata: { username: created.username, role: created.role }
     });
     return res.status(201).json(created);
   } catch (error) {
@@ -2891,9 +3642,21 @@ app.post("/api/admin/users", requireAdmin, async (req, res) => {
 
 app.patch("/api/admin/users/:username/password", requireAdmin, async (req, res) => {
   try {
+    const tenantId = normalizeTenantId(req.tenant_id);
     const updated = await updateUserPasswordStore({
       username: req.params.username,
-      password: req.body.password
+      password: req.body.password,
+      tenantId
+    });
+    appendAuditEvent({
+      tenantId,
+      actorUsername: req.session.user?.username || "unknown",
+      actorRole: req.session.user?.role || "admin",
+      action: "admin.user.password_reset",
+      targetType: "user",
+      targetId: updated.id,
+      ipAddress: getAuthClientIp(req),
+      metadata: { username: updated.username }
     });
     return res.json(updated);
   } catch (error) {
@@ -2901,9 +3664,96 @@ app.patch("/api/admin/users/:username/password", requireAdmin, async (req, res) 
   }
 });
 
+app.patch("/api/admin/users/:username/mfa", requireAdmin, async (req, res) => {
+  try {
+    const tenantId = normalizeTenantId(req.tenant_id);
+    const enabled = req.body.enabled === true || req.body.enabled === "true";
+    const updated = await updateUserMfaStore({
+      username: req.params.username,
+      enabled,
+      tenantId
+    });
+    appendAuditEvent({
+      tenantId,
+      actorUsername: req.session.user?.username || "unknown",
+      actorRole: req.session.user?.role || "admin",
+      action: "admin.user.mfa_updated",
+      targetType: "user",
+      targetId: updated.id,
+      ipAddress: getAuthClientIp(req),
+      metadata: { username: updated.username, mfa_enabled: updated.mfa_enabled }
+    });
+    return res.json(updated);
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Could not update user MFA setting." });
+  }
+});
+
+app.get("/api/admin/audit-events", requireAdmin, (req, res) => {
+  const tenantId = normalizeTenantId(req.tenant_id);
+  const limit = Math.max(1, Math.min(Number(req.query.limit || 200), 2000));
+  const action = (req.query.action || "").toString().trim();
+  const items = listAuditEvents({ tenantId, limit, action });
+  return res.json({ items, tenant_id: tenantId, limit });
+});
+
+app.get("/api/admin/billing", requireAdmin, (req, res) => {
+  const tenantId = normalizeTenantId(req.tenant_id);
+  const billing = getTenantBilling(tenantId);
+  const limits = getTenantPlanLimits(tenantId);
+  return res.json({
+    tenant_id: tenantId,
+    billing,
+    limits,
+    supported_plans: Object.keys(PLAN_LIMITS)
+  });
+});
+
+app.patch("/api/admin/billing", requireAdmin, (req, res) => {
+  try {
+    const tenantId = normalizeTenantId(req.tenant_id);
+    const next = updateTenantBilling(tenantId, {
+      plan: req.body.plan,
+      seats: req.body.seats,
+      status: req.body.status
+    });
+    appendAuditEvent({
+      tenantId,
+      actorUsername: req.session.user?.username || "unknown",
+      actorRole: req.session.user?.role || "admin",
+      action: "admin.billing.updated",
+      targetType: "billing",
+      targetId: tenantId,
+      ipAddress: getAuthClientIp(req),
+      metadata: { plan: next.plan, seats: next.seats, status: next.status }
+    });
+    return res.json({
+      tenant_id: tenantId,
+      billing: next,
+      limits: getTenantPlanLimits(tenantId)
+    });
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Could not update billing." });
+  }
+});
+
+app.get("/api/admin/tenant", requireAdmin, (req, res) => {
+  const tenantId = normalizeTenantId(req.tenant_id);
+  const tenants = readTenantsStore();
+  const tenant = tenants.items?.[tenantId] || ensureTenantExists(tenantId);
+  return res.json({
+    tenant_id: tenantId,
+    tenant,
+    billing: getTenantBilling(tenantId),
+    limits: getTenantPlanLimits(tenantId)
+  });
+});
+
 app.get("/api/admin/settings", requireAdmin, (req, res) => {
-  const cfg = getRuntimeConfig();
+  const tenantId = normalizeTenantId(req.tenant_id);
+  const cfg = getRuntimeConfig(tenantId);
   res.json({
+    tenant_id: tenantId,
     telnyx_connection_id: cfg.telnyx_connection_id,
     telnyx_from_number: cfg.telnyx_from_number,
     telnyx_fax_application_id: cfg.telnyx_fax_application_id,
@@ -2918,7 +3768,8 @@ app.get("/api/admin/settings", requireAdmin, (req, res) => {
 
 app.patch("/api/admin/settings", requireAdmin, (req, res) => {
   try {
-    const cfg = readConfig();
+    const tenantId = normalizeTenantId(req.tenant_id);
+    const cfg = readConfig(tenantId);
     const next = { ...cfg };
 
     if (req.body.telnyx_api_key !== undefined) {
@@ -2966,7 +3817,17 @@ app.patch("/api/admin/settings", requireAdmin, (req, res) => {
       next.office_email = email || "eyecarecenteroc@gmail.com";
     }
 
-    writeConfig(next);
+    writeConfig(next, tenantId);
+    appendAuditEvent({
+      tenantId,
+      actorUsername: req.session.user?.username || "unknown",
+      actorRole: req.session.user?.role || "admin",
+      action: "admin.settings.updated",
+      targetType: "settings",
+      targetId: tenantId,
+      ipAddress: getAuthClientIp(req),
+      metadata: {}
+    });
     return res.json({
       ok: true,
       telnyx_connection_id: next.telnyx_connection_id,
@@ -2986,7 +3847,8 @@ app.patch("/api/admin/settings", requireAdmin, (req, res) => {
 
 app.get("/api/admin/telnyx/fax-application", requireAdmin, async (req, res) => {
   try {
-    const cfg = requireConfig(res);
+    const tenantId = normalizeTenantId(req.tenant_id);
+    const cfg = requireConfig(res, tenantId);
     if (!cfg) {
       return;
     }
@@ -3014,7 +3876,8 @@ app.get("/api/admin/telnyx/fax-application", requireAdmin, async (req, res) => {
 
 app.patch("/api/admin/telnyx/fax-application", requireAdmin, async (req, res) => {
   try {
-    const cfg = requireConfig(res);
+    const tenantId = normalizeTenantId(req.tenant_id);
+    const cfg = requireConfig(res, tenantId);
     if (!cfg) {
       return;
     }
@@ -3054,6 +3917,20 @@ app.patch("/api/admin/telnyx/fax-application", requireAdmin, async (req, res) =>
       faxApplicationId: cfg.telnyx_fax_application_id,
       payload
     });
+    appendAuditEvent({
+      tenantId,
+      actorUsername: req.session.user?.username || "unknown",
+      actorRole: req.session.user?.role || "admin",
+      action: "admin.telnyx.fax_application.updated",
+      targetType: "telnyx_fax_application",
+      targetId: cfg.telnyx_fax_application_id,
+      ipAddress: getAuthClientIp(req),
+      metadata: {
+        fax_email_recipient: data.fax_email_recipient || "",
+        inbound_channel_limit: data?.inbound?.channel_limit ?? null,
+        outbound_channel_limit: data?.outbound?.channel_limit ?? null
+      }
+    });
 
     return res.json({
       ok: true,
@@ -3069,18 +3946,30 @@ app.patch("/api/admin/telnyx/fax-application", requireAdmin, async (req, res) =>
 
 app.post(["/api/webhooks/telnyx", "/telnyx/webhook"], (req, res) => {
   try {
+    const fallbackTenantId = normalizeTenantId(req.get("x-tenant-id") || DEFAULT_TENANT_ID);
     const signature = verifyTelnyxWebhookSignature(req);
     if (!signature.valid) {
       return res.status(401).json({ error: `Webhook signature invalid (${signature.reason}).` });
     }
     const parsed = parseWebhook(req.body);
     if (parsed.faxId) {
+      const tenantId = getFaxTenantId(parsed.faxId, fallbackTenantId);
       upsertFax(parsed.faxId, {
         id: parsed.faxId,
         status: parsed.status,
         failure_reason: parsed.failureReason
+      }, tenantId);
+      appendEvent(parsed.faxId, parsed.eventType, parsed.payload, tenantId);
+      appendAuditEvent({
+        tenantId,
+        actorUsername: "telnyx-webhook",
+        actorRole: "system",
+        action: "fax.webhook.received",
+        targetType: "fax",
+        targetId: parsed.faxId,
+        ipAddress: getAuthClientIp(req),
+        metadata: { event_type: parsed.eventType, status: parsed.status }
       });
-      appendEvent(parsed.faxId, parsed.eventType, parsed.payload);
     }
     return res.status(200).json({ ok: true });
   } catch (error) {

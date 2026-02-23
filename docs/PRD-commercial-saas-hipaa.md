@@ -5,6 +5,22 @@
 - Owner: Product + Engineering
 - Status: Draft v1 for implementation
 
+## Implementation Snapshot (v2 alpha)
+- Branch: `codex/v2-commercial`
+- Version: `2.0.0-alpha.1`
+- Completed in current alpha:
+  - Tenant-aware request scoping via `X-Tenant-Id` + session tenant binding
+  - Immutable audit event logging APIs
+  - Idempotent `POST /api/faxes` support
+  - Plan-based enforcement for contacts/users/recipients
+  - Billing admin APIs (plan/seats/status)
+  - Admin MFA toggle API
+- Still pending for production commercialization:
+  - Full Postgres/Redis repository wiring
+  - Stripe subscription lifecycle
+  - Queue dead-letter and replay controls
+  - Enterprise SSO
+
 ## 1. Product Vision
 Build a commercially viable, browser-first fax platform for healthcare and professional offices with:
 - Reliable outbound and inbound faxing via Telnyx

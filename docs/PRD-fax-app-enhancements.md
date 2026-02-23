@@ -4,6 +4,7 @@
 - Date: 2026-02-20
 - Scope: Send reliability, confirmation UX, multi-file handling, login page polish, history retention, auth hardening, deployment guidance, D1 persistence.
 - Scope: security hardening (webhook verification, signed media delivery, login throttling, queue recovery, durable sessions).
+- Scope (v2 branch extension): tenant-scoped commercial controls (audit trail, plan limits, idempotent send, billing/mfa admin APIs) on `codex/v2-commercial`.
 
 ## Product Goal
 Provide a secure browser-based fax system for Eyecare Care of Orange County with reliable outbound sending, clear confirmation feedback, and admin-controlled settings.

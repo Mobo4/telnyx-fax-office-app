@@ -40,6 +40,7 @@
 - [x] Add D1-backed session store for durable auth sessions.
 - [x] Add local file-backed session store fallback when D1 is not enabled.
 - [x] Establish stable/commercial major-version branches and rollback tag policy.
+- [x] Ship v2 commercial alpha API core on `codex/v2-commercial` (tenant scoping, audit, idempotency, plan limits, billing/mfa admin APIs).
 
 ## Next Tasks
 - [ ] Execute commercial SaaS program in `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-commercial-saas-hipaa.md`.
