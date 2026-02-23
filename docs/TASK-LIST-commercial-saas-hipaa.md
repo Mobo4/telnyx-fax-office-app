@@ -9,6 +9,11 @@
 - [x] Add plan-based limits for contacts/users/recipients per send.
 - [x] Add admin billing endpoints for plan + seat management.
 - [x] Add admin MFA toggle endpoint for user accounts.
+- [x] Remove unauthenticated tenant auto-provisioning and require explicit tenant provisioning.
+- [x] Add tenant provisioning admin API (`GET/POST /api/admin/tenants`) for controlled workspace creation.
+- [x] Fix tenant config isolation (remove global config fallback bleed).
+- [x] Add tenant ownership guard for `/api/faxes/:id/refresh`.
+- [x] Add free billing mode (`BILLING_MODE=free`) while keeping paid API shape for future Stripe work.
 - [ ] Wire app runtime to Postgres/Redis repositories in production mode.
 
 ## Phase 1: Foundation (P0)

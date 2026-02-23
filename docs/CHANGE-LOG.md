@@ -1,5 +1,43 @@
 # Change Log
 
+## 2026-02-23 (v2-commercial compliance hardening wave)
+### Completed
+- Removed implicit tenant auto-provisioning from request flow.
+  - Unknown tenant IDs no longer create records when calling `/api/health` or other routes.
+  - Unknown tenants now return `404` on login/protected API access.
+- Added explicit tenant provisioning API:
+  - `GET /api/admin/tenants`
+  - `POST /api/admin/tenants` (default-tenant admin only).
+- Fixed tenant resolution precedence to always honor session tenant first, preventing body/header tenant override for authenticated users.
+- Refactored config persistence to tenant-scoped map only:
+  - no top-level config key mirroring
+  - no cross-tenant config inheritance bleed.
+- Hardened fax refresh endpoint:
+  - `POST /api/faxes/:id/refresh` now requires fax record ownership in active tenant before provider poll.
+- Added free-mode billing toggle:
+  - `BILLING_MODE=free` default
+  - billing APIs remain present for future Stripe work
+  - paid plan mutation is blocked in free mode.
+- Added `BILLING_MODE` to `.env.example` and health/commercial diagnostics.
+- Updated continuity docs:
+  - `/Users/alex/Documents/Projects/Telnyx/README.md`
+  - `/Users/alex/Documents/Projects/Telnyx/docs/PRD-fax-app-enhancements.md`
+  - `/Users/alex/Documents/Projects/Telnyx/docs/PRD-commercial-saas-hipaa.md`
+  - `/Users/alex/Documents/Projects/Telnyx/docs/KNOWLEDGE-BASE.md`
+  - `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST.md`
+  - `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-commercial-saas-hipaa.md`
+
+### Validation
+- `node --check /Users/alex/Documents/Projects/Telnyx/server.js`
+- `node --check /Users/alex/Documents/Projects/Telnyx/public/app.js`
+- Smoke checks:
+  - unknown tenant no longer auto-creates via `/api/health`
+  - unknown tenant login returns `404`
+  - explicit tenant provisioning works via `/api/admin/tenants`
+  - free billing mode reports `plan=free` and blocks billing patch
+  - config writes are tenant-scoped (no top-level `telnyx_api_key` persisted)
+  - refreshing unknown fax ID returns tenant-safe `404`.
+
 ## 2026-02-23 (v2-commercial implementation wave)
 ### Completed
 - Implemented tenant-aware API context (`X-Tenant-Id` + session tenant binding) on `codex/v2-commercial`.

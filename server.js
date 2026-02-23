@@ -44,8 +44,16 @@ const FAX_HISTORY_VISIBLE_LIMIT = 50;
 const DEFAULT_TENANT_ID = (process.env.DEFAULT_TENANT_ID || "default").trim() || "default";
 const MULTI_TENANT_ENABLED = process.env.MULTI_TENANT_ENABLED !== "false";
 const COMMERCIAL_ENFORCEMENTS_ENABLED = process.env.COMMERCIAL_ENFORCEMENTS_ENABLED !== "false";
+const BILLING_MODE = (process.env.BILLING_MODE || "free").toString().trim().toLowerCase() === "paid"
+  ? "paid"
+  : "free";
 const IDEMPOTENCY_TTL_SECONDS = Math.max(60, Number(process.env.IDEMPOTENCY_TTL_SECONDS || 24 * 60 * 60));
 const PLAN_LIMITS = {
+  free: {
+    max_contacts: 3000,
+    max_users: 25,
+    max_recipients_per_send: 100
+  },
   starter: {
     max_contacts: 3000,
     max_users: 10,
@@ -62,6 +70,7 @@ const PLAN_LIMITS = {
     max_recipients_per_send: 500
   }
 };
+const BILLING_SUPPORTED_PLANS = Object.keys(PLAN_LIMITS).filter((plan) => plan !== "free");
 const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 const D1_ACCOUNT_ID = (process.env.CLOUDFLARE_ACCOUNT_ID || "").trim();
 const D1_DATABASE_ID = (process.env.CLOUDFLARE_D1_DATABASE_ID || "").trim();
@@ -116,6 +125,10 @@ if (!process.env.SESSION_SECRET) {
   console.warn("SESSION_SECRET not set. A temporary secret is being used for this process.");
 }
 const effectiveMediaUrlSigningSecret = MEDIA_URL_SIGNING_SECRET || sessionSecret;
+
+function defaultTenantPlan() {
+  return BILLING_MODE === "paid" ? "starter" : "free";
+}
 
 app.set("trust proxy", 1);
 app.use(
@@ -248,8 +261,8 @@ function getTenantIdFromRequest(req) {
   if (!MULTI_TENANT_ENABLED) {
     return DEFAULT_TENANT_ID;
   }
-  const sessionTenant = normalizeTenantId(req.session?.user?.tenant_id);
-  if (sessionTenant && sessionTenant !== DEFAULT_TENANT_ID) {
+  if (req.session?.user?.tenant_id) {
+    const sessionTenant = normalizeTenantId(req.session.user.tenant_id);
     return sessionTenant;
   }
   const headerTenant = normalizeTenantId(req.get("x-tenant-id"));
@@ -554,7 +567,7 @@ function ensureDataFiles() {
         [DEFAULT_TENANT_ID]: {
           id: DEFAULT_TENANT_ID,
           name: "Default Tenant",
-          plan: "starter",
+          plan: defaultTenantPlan(),
           active: true,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
@@ -574,7 +587,7 @@ function ensureDataFiles() {
       items: {
         [DEFAULT_TENANT_ID]: {
           tenant_id: DEFAULT_TENANT_ID,
-          plan: "starter",
+          plan: defaultTenantPlan(),
           seats: 5,
           status: "active",
           created_at: new Date().toISOString(),
@@ -582,6 +595,19 @@ function ensureDataFiles() {
         }
       }
     });
+  }
+  const tenants = readTenantsStore();
+  if (!tenants.items?.[DEFAULT_TENANT_ID]) {
+    tenants.items = tenants.items || {};
+    tenants.items[DEFAULT_TENANT_ID] = {
+      id: DEFAULT_TENANT_ID,
+      name: "Default Tenant",
+      plan: defaultTenantPlan(),
+      active: true,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+    writeTenantsStore(tenants);
   }
 
   if (!fs.existsSync(USERS_FILE)) {
@@ -649,21 +675,47 @@ function writeTenantsStore(store) {
   });
 }
 
-function ensureTenantExists(tenantId) {
+function getTenantById(tenantId) {
   const normalizedTenantId = normalizeTenantId(tenantId);
   const store = readTenantsStore();
-  if (store.items?.[normalizedTenantId]) {
-    return store.items[normalizedTenantId];
+  return store.items?.[normalizedTenantId] || null;
+}
+
+function ensureTenantExists(tenantId) {
+  const existing = getTenantById(tenantId);
+  if (existing) {
+    return existing;
   }
+  return null;
+}
+
+function createTenantRecord({
+  tenantId,
+  name = "",
+  plan = defaultTenantPlan(),
+  active = true
+}) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  if (normalizedTenantId === DEFAULT_TENANT_ID) {
+    throw new Error("Default tenant already exists.");
+  }
+  if (getTenantById(normalizedTenantId)) {
+    throw new Error("Tenant already exists.");
+  }
+  const planName = PLAN_LIMITS[(plan || "").toString().trim().toLowerCase()]
+    ? (plan || "").toString().trim().toLowerCase()
+    : defaultTenantPlan();
+  const store = readTenantsStore();
   const now = new Date().toISOString();
   const tenant = {
     id: normalizedTenantId,
-    name: normalizedTenantId === DEFAULT_TENANT_ID ? "Default Tenant" : `Tenant ${normalizedTenantId}`,
-    plan: "starter",
-    active: true,
+    name: (name || `Tenant ${normalizedTenantId}`).toString().trim(),
+    plan: planName,
+    active: active !== false,
     created_at: now,
     updated_at: now
   };
+  store.items = store.items || {};
   store.items[normalizedTenantId] = tenant;
   writeTenantsStore(store);
   return tenant;
@@ -684,11 +736,24 @@ function getTenantBilling(tenantId) {
   const normalizedTenantId = normalizeTenantId(tenantId);
   const tenants = readTenantsStore();
   const billingStore = readBillingStore();
-  const tenant = tenants.items?.[normalizedTenantId] || ensureTenantExists(normalizedTenantId);
+  const tenant = tenants.items?.[normalizedTenantId] || null;
+  if (!tenant) {
+    return null;
+  }
+  if (BILLING_MODE !== "paid") {
+    return {
+      tenant_id: normalizedTenantId,
+      plan: "free",
+      seats: 9999,
+      status: tenant.active === false ? "suspended" : "active",
+      created_at: tenant.created_at || new Date().toISOString(),
+      updated_at: tenant.updated_at || new Date().toISOString()
+    };
+  }
   const now = new Date().toISOString();
   const billing = billingStore.items?.[normalizedTenantId] || {
     tenant_id: normalizedTenantId,
-    plan: tenant.plan || "starter",
+    plan: tenant.plan || defaultTenantPlan(),
     seats: 5,
     status: tenant.active === false ? "suspended" : "active",
     created_at: now,
@@ -705,11 +770,18 @@ function getTenantBilling(tenantId) {
 }
 
 function updateTenantBilling(tenantId, patch = {}) {
+  if (BILLING_MODE !== "paid") {
+    throw new Error("Billing mode is set to free. Paid plan updates are disabled.");
+  }
   const normalizedTenantId = normalizeTenantId(tenantId);
+  const tenant = getTenantById(normalizedTenantId);
+  if (!tenant) {
+    throw new Error("Tenant not found.");
+  }
   const billingStore = readBillingStore();
   const existing = getTenantBilling(normalizedTenantId);
-  const nextPlan = (patch.plan || existing.plan || "starter").toString().trim().toLowerCase();
-  const plan = PLAN_LIMITS[nextPlan] ? nextPlan : existing.plan || "starter";
+  const nextPlan = (patch.plan || existing.plan || defaultTenantPlan()).toString().trim().toLowerCase();
+  const plan = PLAN_LIMITS[nextPlan] && nextPlan !== "free" ? nextPlan : existing.plan || defaultTenantPlan();
   const next = {
     ...existing,
     plan,
@@ -722,7 +794,6 @@ function updateTenantBilling(tenantId, patch = {}) {
   writeBillingStore(billingStore);
 
   const tenants = readTenantsStore();
-  const tenant = tenants.items?.[normalizedTenantId] || ensureTenantExists(normalizedTenantId);
   tenants.items[normalizedTenantId] = {
     ...tenant,
     plan: next.plan,
@@ -734,8 +805,11 @@ function updateTenantBilling(tenantId, patch = {}) {
 }
 
 function getTenantPlanLimits(tenantId) {
+  if (BILLING_MODE !== "paid") {
+    return PLAN_LIMITS.free;
+  }
   const billing = getTenantBilling(tenantId);
-  const plan = (billing.plan || "starter").toLowerCase();
+  const plan = (billing?.plan || defaultTenantPlan()).toLowerCase();
   return PLAN_LIMITS[plan] || PLAN_LIMITS.starter;
 }
 
@@ -934,6 +1008,38 @@ function writeUsers(users) {
   writeJson(USERS_FILE, normalizeUsersStore(users));
 }
 
+const TENANT_CONFIG_FIELDS = [
+  "telnyx_api_key",
+  "telnyx_connection_id",
+  "telnyx_from_number",
+  "telnyx_fax_application_id",
+  "outbound_copy_enabled",
+  "outbound_copy_email",
+  "office_name",
+  "office_fax_number",
+  "office_email"
+];
+
+function readConfigStore() {
+  const raw = readJson(CONFIG_FILE, { updated_at: new Date().toISOString(), tenants: {} });
+  const tenants = raw?.tenants && typeof raw.tenants === "object" ? { ...raw.tenants } : {};
+  if (!tenants[DEFAULT_TENANT_ID]) {
+    const legacy = {};
+    TENANT_CONFIG_FIELDS.forEach((field) => {
+      if (raw[field] !== undefined) {
+        legacy[field] = raw[field];
+      }
+    });
+    if (Object.keys(legacy).length) {
+      tenants[DEFAULT_TENANT_ID] = legacy;
+    }
+  }
+  return {
+    updated_at: raw?.updated_at || new Date().toISOString(),
+    tenants
+  };
+}
+
 function readConfig(tenantId = DEFAULT_TENANT_ID) {
   const normalizedTenantId = normalizeTenantId(tenantId);
   const defaults = {
@@ -951,12 +1057,11 @@ function readConfig(tenantId = DEFAULT_TENANT_ID) {
     office_fax_number: process.env.OFFICE_FAX_NUMBER || "+17145580642",
     office_email: process.env.OFFICE_EMAIL || "eyecarecenteroc@gmail.com"
   };
-  const stored = readJson(CONFIG_FILE, defaults);
-  const tenantsMap = stored?.tenants && typeof stored.tenants === "object" ? stored.tenants : {};
-  const tenantScoped = tenantsMap[normalizedTenantId] || {};
+  const stored = readConfigStore();
+  const tenantScoped =
+    stored?.tenants && typeof stored.tenants === "object" ? stored.tenants[normalizedTenantId] || {} : {};
   return {
     ...defaults,
-    ...stored,
     ...tenantScoped,
     tenant_id: normalizedTenantId
   };
@@ -964,8 +1069,8 @@ function readConfig(tenantId = DEFAULT_TENANT_ID) {
 
 function writeConfig(config, tenantId = DEFAULT_TENANT_ID) {
   const normalizedTenantId = normalizeTenantId(tenantId);
-  const existing = readJson(CONFIG_FILE, {});
-  const tenants = existing?.tenants && typeof existing.tenants === "object" ? existing.tenants : {};
+  const existing = readConfigStore();
+  const tenants = existing?.tenants && typeof existing.tenants === "object" ? { ...existing.tenants } : {};
   const now = new Date().toISOString();
   const nextTenantConfig = {
     ...readConfig(normalizedTenantId),
@@ -976,10 +1081,9 @@ function writeConfig(config, tenantId = DEFAULT_TENANT_ID) {
   tenants[normalizedTenantId] = nextTenantConfig;
 
   writeJson(CONFIG_FILE, {
-    ...existing,
-    ...nextTenantConfig,
+    updated_at: now,
     tenants,
-    updated_at: now
+    migrated_at: now
   });
 }
 
@@ -2761,7 +2865,6 @@ function requireAdmin(req, res, next) {
 
 app.use((req, res, next) => {
   req.tenant_id = getTenantIdFromRequest(req);
-  ensureTenantExists(req.tenant_id);
   if (D1_USERS_ENABLED && normalizeTenantId(req.tenant_id) !== DEFAULT_TENANT_ID) {
     return res.status(503).json({
       error: "Tenant-scoped auth with D1 is not enabled. Use local user store or default tenant."
@@ -2781,6 +2884,9 @@ app.use("/api", (req, res, next) => {
   if (openRoutes.has(req.path)) {
     return next();
   }
+  if (!getTenantById(req.tenant_id)) {
+    return res.status(404).json({ error: "Tenant not found." });
+  }
   if (!req.session.user) {
     return res.status(401).json({ error: "Login required." });
   }
@@ -2793,7 +2899,10 @@ app.use("/api", (req, res, next) => {
 app.post("/api/auth/login", async (req, res) => {
   try {
     const tenantId = normalizeTenantId(req.tenant_id);
-    const tenant = ensureTenantExists(tenantId);
+    const tenant = getTenantById(tenantId);
+    if (!tenant) {
+      return res.status(404).json({ error: "Tenant is not provisioned." });
+    }
     if (tenant.active === false) {
       return res.status(403).json({ error: "Tenant is suspended." });
     }
@@ -2964,6 +3073,7 @@ app.get("/api/health", (req, res) => {
     commercial: {
       multi_tenant_enabled: MULTI_TENANT_ENABLED,
       commercial_enforcements_enabled: COMMERCIAL_ENFORCEMENTS_ENABLED,
+      billing_mode: BILLING_MODE,
       default_tenant_id: DEFAULT_TENANT_ID,
       active_tenant_id: tenantId,
       idempotency_ttl_seconds: IDEMPOTENCY_TTL_SECONDS
@@ -2973,6 +3083,10 @@ app.get("/api/health", (req, res) => {
 
 app.get("/api/settings", (req, res) => {
   const tenantId = normalizeTenantId(req.tenant_id);
+  const tenant = getTenantById(tenantId);
+  if (!tenant) {
+    return res.status(404).json({ error: "Tenant not found." });
+  }
   const cfg = getRuntimeConfig(tenantId);
   const billing = getTenantBilling(tenantId);
   return res.json({
@@ -3582,6 +3696,12 @@ app.post("/api/uploads/batch", (req, res) => {
 app.post("/api/faxes/:id/refresh", async (req, res) => {
   try {
     const tenantId = normalizeTenantId(req.tenant_id);
+    const store = readStore();
+    const archive = readArchiveStore();
+    const localFax = store.items?.[req.params.id] || archive.items?.[req.params.id] || null;
+    if (!localFax || normalizeTenantId(localFax.tenant_id) !== tenantId) {
+      return res.status(404).json({ error: "Fax not found for tenant." });
+    }
     const cfg = requireConfig(res, tenantId);
     if (!cfg) {
       return;
@@ -3699,13 +3819,18 @@ app.get("/api/admin/audit-events", requireAdmin, (req, res) => {
 
 app.get("/api/admin/billing", requireAdmin, (req, res) => {
   const tenantId = normalizeTenantId(req.tenant_id);
+  const tenant = getTenantById(tenantId);
+  if (!tenant) {
+    return res.status(404).json({ error: "Tenant not found." });
+  }
   const billing = getTenantBilling(tenantId);
   const limits = getTenantPlanLimits(tenantId);
   return res.json({
     tenant_id: tenantId,
+    billing_mode: BILLING_MODE,
     billing,
     limits,
-    supported_plans: Object.keys(PLAN_LIMITS)
+    supported_plans: BILLING_MODE === "paid" ? BILLING_SUPPORTED_PLANS : []
   });
 });
 
@@ -3740,13 +3865,54 @@ app.patch("/api/admin/billing", requireAdmin, (req, res) => {
 app.get("/api/admin/tenant", requireAdmin, (req, res) => {
   const tenantId = normalizeTenantId(req.tenant_id);
   const tenants = readTenantsStore();
-  const tenant = tenants.items?.[tenantId] || ensureTenantExists(tenantId);
+  const tenant = tenants.items?.[tenantId] || null;
+  if (!tenant) {
+    return res.status(404).json({ error: "Tenant not found." });
+  }
   return res.json({
     tenant_id: tenantId,
     tenant,
     billing: getTenantBilling(tenantId),
     limits: getTenantPlanLimits(tenantId)
   });
+});
+
+app.get("/api/admin/tenants", requireAdmin, (req, res) => {
+  const currentTenantId = normalizeTenantId(req.tenant_id);
+  const items = Object.values(readTenantsStore().items || {})
+    .filter((tenant) =>
+      currentTenantId === DEFAULT_TENANT_ID ? true : normalizeTenantId(tenant.id) === currentTenantId
+    )
+    .sort((a, b) => new Date(a.created_at || 0).getTime() - new Date(b.created_at || 0).getTime());
+  return res.json({ items, billing_mode: BILLING_MODE });
+});
+
+app.post("/api/admin/tenants", requireAdmin, (req, res) => {
+  try {
+    const currentTenantId = normalizeTenantId(req.tenant_id);
+    if (currentTenantId !== DEFAULT_TENANT_ID) {
+      return res.status(403).json({ error: "Tenant provisioning is only allowed from the default tenant admin." });
+    }
+    const tenant = createTenantRecord({
+      tenantId: req.body.tenant_id,
+      name: req.body.name,
+      plan: BILLING_MODE === "paid" ? req.body.plan : "free",
+      active: req.body.active
+    });
+    appendAuditEvent({
+      tenantId: DEFAULT_TENANT_ID,
+      actorUsername: req.session.user?.username || "unknown",
+      actorRole: req.session.user?.role || "admin",
+      action: "admin.tenant.created",
+      targetType: "tenant",
+      targetId: tenant.id,
+      ipAddress: getAuthClientIp(req),
+      metadata: { name: tenant.name, plan: tenant.plan, active: tenant.active }
+    });
+    return res.status(201).json({ tenant, billing_mode: BILLING_MODE });
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Could not create tenant." });
+  }
 });
 
 app.get("/api/admin/settings", requireAdmin, (req, res) => {
@@ -3946,7 +4112,7 @@ app.patch("/api/admin/telnyx/fax-application", requireAdmin, async (req, res) =>
 
 app.post(["/api/webhooks/telnyx", "/telnyx/webhook"], (req, res) => {
   try {
-    const fallbackTenantId = normalizeTenantId(req.get("x-tenant-id") || DEFAULT_TENANT_ID);
+    const fallbackTenantId = DEFAULT_TENANT_ID;
     const signature = verifyTelnyxWebhookSignature(req);
     if (!signature.valid) {
       return res.status(401).json({ error: `Webhook signature invalid (${signature.reason}).` });

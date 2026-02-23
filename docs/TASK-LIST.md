@@ -41,6 +41,11 @@
 - [x] Add local file-backed session store fallback when D1 is not enabled.
 - [x] Establish stable/commercial major-version branches and rollback tag policy.
 - [x] Ship v2 commercial alpha API core on `codex/v2-commercial` (tenant scoping, audit, idempotency, plan limits, billing/mfa admin APIs).
+- [x] Remove implicit tenant auto-provisioning from request path; require explicit tenant provisioning.
+- [x] Add explicit tenant provisioning admin endpoints (`GET/POST /api/admin/tenants`).
+- [x] Isolate tenant config persistence to tenant map and remove cross-tenant/global key bleed.
+- [x] Restrict `/api/faxes/:id/refresh` to fax IDs already owned by active tenant.
+- [x] Add free-mode billing toggle (`BILLING_MODE=free`) with payment-ready API contracts preserved.
 
 ## Next Tasks
 - [ ] Execute commercial SaaS program in `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-commercial-saas-hipaa.md`.

@@ -39,6 +39,8 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Optional Cloudflare D1 persistence for user accounts when running on ephemeral hosts.
 - Add login throttling per IP and temporary lockouts per username.
 - Add durable session store (D1-backed where configured) for restart-safe auth sessions.
+- Reject unknown/non-provisioned tenant IDs at login and protected API routes.
+- Tenant provisioning must be explicit (admin API), never implicit from request headers/body.
 - Add durable session store with fallback priority:
   - D1-backed where configured
   - local file store (`DATA_DIR/sessions_local.json`) when D1 is not configured
@@ -96,11 +98,14 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Errors are explicit and user-readable.
 - Uploaded files are not directly public static assets; use signed expiring media links.
 - Telnyx webhook payloads should be signature-verified when key is configured.
+- `/api/faxes/:id/refresh` only refreshes fax IDs already owned by active tenant.
+- Tenant settings are isolated in tenant-scoped config storage (no global key bleed).
 
 ### Deployment and Availability
 - Production requires a public HTTPS host for webhook and document retrieval.
 - Supported now: Render Node service (current live baseline).
 - Optional migration path: Cloudflare (Workers/Containers) after compatibility testing.
+- Billing runs in free mode by default (`BILLING_MODE=free`); paid lifecycle is deferred but API shape remains.
 - Inbound flow must run on non-sleeping service tier to avoid missed/delayed webhook processing.
 - Telnyx inbound email recipient remains enabled as backup.
 - For Render persistence, data should be stored on mounted disk path (default `/var/data/telnyx-fax-office-app`).
@@ -130,6 +135,8 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Server rejects non-HTTPS media URLs with explicit error.
 - PRD and knowledge docs include hosting decision and backup inbound path.
 - Webhook route rejects invalid signatures when verification is enabled.
+- Unknown tenant login attempts are rejected (no auto-provision side effect).
+- `/api/admin/tenants` is available for explicit tenant provisioning by default-tenant admin.
 - Media URLs used for faxing are signed and expire.
 - Repeated failed login attempts trigger throttling/lockout responses.
 - Queued bulk jobs are resumed by background worker after restart.

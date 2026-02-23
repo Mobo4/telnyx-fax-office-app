@@ -1,6 +1,6 @@
 {
   "name": "telnyx-fax-office-app",
-  "version": "2.0.0-alpha.1",
+  "version": "2.0.0-alpha.3",
   "description": "Browser-based office fax app for Telnyx with delivery verification.",
   "main": "server.js",
   "scripts": {

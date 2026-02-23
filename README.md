@@ -62,6 +62,7 @@ Set:
   - `DEFAULT_TENANT_ID` (default `default`)
   - `COMMERCIAL_ENFORCEMENTS_ENABLED` (default `true`)
   - `IDEMPOTENCY_TTL_SECONDS` (default `86400`)
+  - `BILLING_MODE` (`free` by default, set to `paid` when enabling Stripe lifecycle later)
 - Optional Cloudflare D1 persistence (users + settings/contacts/fax history snapshots):
   - `CLOUDFLARE_ACCOUNT_ID`
   - `CLOUDFLARE_D1_DATABASE_ID`
@@ -100,6 +101,14 @@ Open:
 - `user`:
   - Send/view faxes only
   - Upload files and reuse previous media URL
+
+Tenant provisioning notes:
+
+- Tenants are no longer auto-created from request headers/body.
+- Login to an unknown tenant returns `404 Tenant is not provisioned`.
+- Create tenants explicitly via admin API:
+  - `POST /api/admin/tenants` (default tenant admin only)
+  - `GET /api/admin/tenants`
 
 ## 5. Telnyx webhook URL
 
@@ -224,9 +233,12 @@ CSV template:
 - Billing and plan controls:
   - `GET /api/admin/billing`
   - `PATCH /api/admin/billing`
+  - In `BILLING_MODE=free`, billing API remains available but paid plan updates are blocked.
 - Admin tenant/user security controls:
   - `PATCH /api/admin/users/:username/mfa`
   - `GET /api/admin/tenant`
+  - `GET /api/admin/tenants`
+  - `POST /api/admin/tenants`
 
 ## Versioning
 

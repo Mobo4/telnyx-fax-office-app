@@ -7,13 +7,17 @@
 
 ## Implementation Snapshot (v2 alpha)
 - Branch: `codex/v2-commercial`
-- Version: `2.0.0-alpha.1`
+- Version: `2.0.0-alpha.3`
 - Completed in current alpha:
   - Tenant-aware request scoping via `X-Tenant-Id` + session tenant binding
+  - Explicit tenant provisioning (`GET/POST /api/admin/tenants`) with no implicit tenant creation
+  - Tenant-safe config isolation (tenant map only, no top-level bleed)
+  - Tenant ownership guard for fax refresh polling
   - Immutable audit event logging APIs
   - Idempotent `POST /api/faxes` support
   - Plan-based enforcement for contacts/users/recipients
   - Billing admin APIs (plan/seats/status)
+  - Free billing mode default (`BILLING_MODE=free`) with paid API shape retained for Stripe phase
   - Admin MFA toggle API
 - Still pending for production commercialization:
   - Full Postgres/Redis repository wiring

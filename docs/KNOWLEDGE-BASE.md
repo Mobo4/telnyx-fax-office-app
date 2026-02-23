@@ -35,6 +35,7 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - Background worker loop for queued bulk fax recovery.
 - Optional webhook signature verification for Telnyx events.
 - v2 commercial branch adds tenant-aware request scoping (`X-Tenant-Id`), immutable audit logs, billing/plan admin APIs, and idempotent outbound send.
+- v2 now requires explicit tenant provisioning; unknown tenant IDs are rejected instead of auto-created.
 
 ## API Surface (primary)
 - Auth: `/api/auth/login`, `/api/auth/logout`, `/api/auth/me`
@@ -50,6 +51,7 @@ Operational reference for architecture, workflow behavior, limits, and known edg
   - `/api/admin/audit-events`
   - `/api/admin/billing`
   - `/api/admin/tenant`
+  - `/api/admin/tenants`
   - `/api/admin/users/:username/mfa`
 
 ## Send Workflow (current)
@@ -137,11 +139,22 @@ Operational reference for architecture, workflow behavior, limits, and known edg
   4. `DEFAULT_TENANT_ID`
 - Protected `/api/*` routes require session tenant == active tenant.
 - Default tenant remains backward compatible (`default`) to avoid breaking v1 operations.
+- Unknown tenants are denied at login and protected API routes (`404`) until explicitly provisioned.
+- Explicit tenant provisioning endpoint:
+  - `POST /api/admin/tenants` (default tenant admin only).
 
 ## v2 Idempotency and Audit
 - `POST /api/faxes` supports `Idempotency-Key`.
 - Cached responses are tenant+method+path scoped with TTL (`IDEMPOTENCY_TTL_SECONDS`).
 - Security/ops events recorded in `/Users/alex/Documents/Projects/Telnyx/data/audit_events.json`.
+
+## Billing Mode
+- `BILLING_MODE=free` is default and currently recommended for office deployment.
+- In free mode:
+  - plan limits resolve to `free` profile
+  - `PATCH /api/admin/billing` is intentionally blocked
+  - billing endpoints remain in place for future Stripe cutover
+- `BILLING_MODE=paid` unlocks paid plan mutation API paths without changing endpoint contracts.
 
 ## Auth/User Persistence Notes
 - User store is normalized on read/write (supports legacy `items` map or array layouts).
