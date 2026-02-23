@@ -41,6 +41,7 @@
 - [x] Add local file-backed session store fallback when D1 is not enabled.
 
 ## Next Tasks
+- [ ] Execute commercial SaaS program in `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-commercial-saas-hipaa.md`.
 - [ ] Add automated tests for `/api/faxes` multi-recipient success/failure mixes.
 - [ ] Add tests for contact cap during CSV import.
 - [ ] Add localhost runtime banner explaining Telnyx public-HTTPS media requirement.

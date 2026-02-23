@@ -6,6 +6,8 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 ## Related Planning Docs
 - `/Users/alex/Documents/Projects/Telnyx/docs/PRD-security-hardening-wave1.md`
 - `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-security-hardening-wave1.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/PRD-commercial-saas-hipaa.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-commercial-saas-hipaa.md`
 
 ## Stack
 - Backend: Node.js + Express (`/Users/alex/Documents/Projects/Telnyx/server.js`)
@@ -152,3 +154,5 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - Add automated integration tests for send success/failure paths.
 - Add explicit banner when app is running on localhost warning about public URL reachability.
 - Add retry controls for failed recipients from results payload.
+- Replace file-based storage with multi-tenant DB + queue worker architecture for commercial scale.
+- Add immutable audit trail, billing, and enterprise auth (SSO/MFA) for commercial readiness.
