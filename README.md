@@ -209,6 +209,13 @@ CSV template:
 
 - `/contact-import-template.csv`
 
+## Versioning
+
+- Stable production line: `main` (`1.x`)
+- Commercial major line: `codex/v2-commercial` (`2.x`)
+- Known-good rollback tag: `v1.2.0-known-good`
+- Branch/tag policy: `/Users/alex/Documents/Projects/Telnyx/docs/VERSIONING-AND-BRANCHING.md`
+
 ## Security
 
 - Do not expose your Telnyx API key in frontend code.

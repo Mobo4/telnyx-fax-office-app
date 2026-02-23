@@ -1,5 +1,22 @@
 # Change Log
 
+## 2026-02-23
+### Completed
+- Added formal versioning/branching policy for stable (`1.x`) and commercial (`2.x`) lines.
+- Created and pushed rollback branches:
+  - `codex/v1-known-good` (commit `0261446`)
+  - `codex/v1-stable`
+  - `codex/v2-commercial`
+- Created and pushed rollback tag: `v1.2.0-known-good`.
+- Bumped stable package version to `1.3.0`.
+
+### Files Changed
+- `/Users/alex/Documents/Projects/Telnyx/package.json`
+- `/Users/alex/Documents/Projects/Telnyx/package-lock.json`
+- `/Users/alex/Documents/Projects/Telnyx/README.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/VERSIONING-AND-BRANCHING.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/CHANGE-LOG.md`
+
 ## 2026-02-22
 ### Completed
 - Added commercial product PRD with multi-tenant SaaS architecture, HIPAA-ready controls, scalability targets, billing, and enterprise auth scope.

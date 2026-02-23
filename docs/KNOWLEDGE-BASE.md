@@ -8,6 +8,7 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-security-hardening-wave1.md`
 - `/Users/alex/Documents/Projects/Telnyx/docs/PRD-commercial-saas-hipaa.md`
 - `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-commercial-saas-hipaa.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/VERSIONING-AND-BRANCHING.md`
 
 ## Stack
 - Backend: Node.js + Express (`/Users/alex/Documents/Projects/Telnyx/server.js`)
