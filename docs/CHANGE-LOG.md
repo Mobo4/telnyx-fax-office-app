@@ -1,5 +1,22 @@
 # Change Log
 
+## 2026-02-23 (v2-commercial branch)
+### Completed
+- Created commercial infrastructure scaffold:
+  - `/Users/alex/Documents/Projects/Telnyx/infra/docker-compose.commercial.yml` (Postgres + Redis).
+- Added initial commercial SQL migration:
+  - `/Users/alex/Documents/Projects/Telnyx/db/migrations/001_commercial_core.sql`
+  - includes multi-tenant tables, audit events, idempotency keys, and billing customer baseline.
+- Bumped package version on commercial branch to `2.0.0-alpha.1`.
+
+### Files Changed
+- `/Users/alex/Documents/Projects/Telnyx/infra/docker-compose.commercial.yml`
+- `/Users/alex/Documents/Projects/Telnyx/db/migrations/001_commercial_core.sql`
+- `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-commercial-saas-hipaa.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/CHANGE-LOG.md`
+- `/Users/alex/Documents/Projects/Telnyx/package.json`
+- `/Users/alex/Documents/Projects/Telnyx/package-lock.json`
+
 ## 2026-02-23
 ### Completed
 - Added formal versioning/branching policy for stable (`1.x`) and commercial (`2.x`) lines.

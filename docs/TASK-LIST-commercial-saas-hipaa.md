@@ -1,5 +1,10 @@
 # Task List: Commercial SaaS + HIPAA-Ready Buildout
 
+## Progress Snapshot
+- [x] Create commercial infrastructure scaffolding (`infra/docker-compose.commercial.yml`).
+- [x] Add initial SQL migration for multi-tenant commercial core (`db/migrations/001_commercial_core.sql`).
+- [ ] Wire app runtime to Postgres/Redis repositories in production mode.
+
 ## Phase 1: Foundation (P0)
 - [ ] Implement multi-tenant schema in Postgres with strict tenant scoping.
 - [ ] Replace JSON file stores with DB repositories for users/settings/contacts/faxes.
