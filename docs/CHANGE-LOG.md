@@ -1,5 +1,29 @@
 # Change Log
 
+## 2026-02-27 (pricing incentives + admin usage dashboard wave)
+### Completed
+- Updated public pricing model to create clear upgrade incentives:
+  - higher included pages on higher tiers
+  - lower overage per-page rates on higher tiers
+- Updated public marketing/signup UX:
+  - explicit page-count billing policy section
+  - clearer payment continuation copy in signup modal
+  - required billing acknowledgement checkbox before signup submission
+- Added tenant usage metering store:
+  - `/Users/alex/Documents/Projects/Telnyx/data/usage_metrics.json`
+- Added usage metering logic:
+  - outbound usage counted on delivered webhook
+  - inbound usage counted on received/delivered webhook
+  - page count from webhook when present, fallback to media-based estimate
+- Added admin metrics endpoint:
+  - `GET /api/admin/dashboard`
+  - returns current/prior month usage, plan policy, and fax status summary
+- Extended billing API payload:
+  - `pricing_policy`
+  - `usage_current_month`
+- Added admin dashboard UI card with usage/overage/ops metrics.
+- Added billing card overage estimate field.
+
 ## 2026-02-27 (stabilization verification wave)
 ### Completed
 - Ran local and live smoke validation for:

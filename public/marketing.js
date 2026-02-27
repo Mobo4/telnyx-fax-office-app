@@ -3,6 +3,13 @@ const signupForm = document.getElementById("signup-form");
 const signupMessage = document.getElementById("signup-message");
 const signupPlan = document.getElementById("signup_plan");
 const signupSubmitBtn = document.getElementById("signup_submit_btn");
+const signupPlanSummary = document.getElementById("signup-plan-summary");
+
+const PLAN_SUMMARY = {
+  starter: "Starter: 300 outbound + 300 inbound pages included. Overage is $0.021/page.",
+  pro: "Pro: 1,800 outbound + 1,800 inbound pages included. Overage is $0.018/page.",
+  enterprise: "Enterprise: 9,000 outbound + 9,000 inbound pages included. Overage is $0.015/page."
+};
 
 function setMessage(text) {
   signupMessage.textContent = text || "";
@@ -12,6 +19,7 @@ function openSignup(plan = "starter") {
   if (signupPlan) {
     signupPlan.value = plan;
   }
+  renderPlanSummary();
   setMessage("");
   signupModal.classList.remove("hidden");
 }
@@ -76,6 +84,13 @@ async function submitSignup(event) {
   }
 }
 
+function renderPlanSummary() {
+  if (!signupPlanSummary || !signupPlan) return;
+  const plan = (signupPlan.value || "starter").toString().trim().toLowerCase();
+  signupPlanSummary.textContent =
+    PLAN_SUMMARY[plan] || "You will continue to Stripe to enter payment details and activate your workspace.";
+}
+
 bindOpenButtons();
 
 const closeBtn = document.getElementById("close-signup");
@@ -96,3 +111,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 signupForm.addEventListener("submit", submitSignup);
+if (signupPlan) {
+  signupPlan.addEventListener("change", renderPlanSummary);
+  renderPlanSummary();
+}

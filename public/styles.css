@@ -130,6 +130,20 @@ h3 {
   margin: 6px 0;
 }
 
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.dashboard-grid .subtle-card {
+  padding: 10px 12px;
+}
+
+.dashboard-grid .subtle-card p {
+  margin: 6px 0;
+}
+
 .card-header {
   display: flex;
   justify-content: space-between;
@@ -671,6 +685,10 @@ a:hover {
   }
 
   .modal-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-grid {
     grid-template-columns: 1fr;
   }
 

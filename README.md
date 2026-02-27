@@ -13,6 +13,7 @@ Browser-based fax app for office use. It includes:
 - Optional Google Sign-In (per tenant) in addition to local username/password
 - Admin controls for user accounts and Telnyx fax app settings
 - Admin billing panel with Stripe checkout and Stripe portal cancel/manage flow
+- Admin dashboard with usage, overage estimate, and fax operations summary
 - Settings panel opened from a gear button (admin only)
 - Inline file attach on Send Fax page (no popup)
 - Per-user memory of the last media URL used
@@ -29,6 +30,7 @@ Browser-based fax app for office use. It includes:
 - Optional HIPAA cover page (default ON) with subject/message fields
 - Office profile defaults (name, fax, email) shown on send page and editable by admin
 - Fax history tabs for Sent and Received with clickable file links
+- Tiered pricing policy with page-based allowances and overage rates
 
 ## 1. Requirements
 

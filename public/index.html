@@ -86,10 +86,10 @@
       <section id="pricing" class="shell pricing">
         <div class="section-head">
           <p class="kicker">Pricing</p>
-          <h2>Transparent plans with page-based economics.</h2>
+          <h2>Volume discounts built in as you move up tiers.</h2>
           <p>
-            Base rates assume Telnyx page cost of <strong>$0.007/page</strong>. We include monthly pages, then bill
-            overage at 3x base cost.
+            Every plan includes monthly outbound and inbound page allowance. If usage goes over, overage is billed per
+            page at the listed rate. Higher tiers include more pages and lower overage rates.
           </p>
         </div>
         <div class="pricing-grid">
@@ -100,7 +100,7 @@
               <li>Included sent pages: 300</li>
               <li>Included received pages: 300</li>
               <li>Overage: $0.021/page</li>
-              <li>Best for single office teams</li>
+              <li>Best for single-office teams</li>
             </ul>
             <button class="btn solid plan-select" data-plan="starter" type="button">Start Starter</button>
           </article>
@@ -110,9 +110,10 @@
             <h3>Pro</h3>
             <p class="price">$49.00<span>/month</span></p>
             <ul>
-              <li>Included sent pages: 1,500</li>
-              <li>Included received pages: 1,500</li>
-              <li>Overage: $0.021/page</li>
+              <li>Included sent pages: 1,800</li>
+              <li>Included received pages: 1,800</li>
+              <li>Overage: $0.018/page</li>
+              <li>~14% lower overage rate vs Starter</li>
               <li>Best for busy clinic groups</li>
             </ul>
             <button class="btn solid plan-select" data-plan="pro" type="button">Start Pro</button>
@@ -122,13 +123,22 @@
             <h3>Enterprise</h3>
             <p class="price">$149.00<span>/month</span></p>
             <ul>
-              <li>Included sent pages: 7,500</li>
-              <li>Included received pages: 7,500</li>
-              <li>Overage: $0.021/page</li>
+              <li>Included sent pages: 9,000</li>
+              <li>Included received pages: 9,000</li>
+              <li>Overage: $0.015/page</li>
+              <li>~29% lower overage rate vs Starter</li>
               <li>Best for high-volume operations</li>
             </ul>
             <button class="btn solid plan-select" data-plan="enterprise" type="button">Start Enterprise</button>
           </article>
+        </div>
+        <div class="policy-note glass">
+          <h3>Page Count Policy</h3>
+          <p>
+            Pages are counted per fax transmission. One 3-page document sent to 2 recipients counts as 6 outbound
+            pages. Inbound pages are counted when fax delivery is confirmed. Overages are shown in your admin
+            dashboard every billing month.
+          </p>
         </div>
       </section>
 
@@ -144,7 +154,7 @@
         </details>
         <details>
           <summary>How does signup work?</summary>
-          <p>Create workspace credentials here, then complete Stripe checkout for paid plans.</p>
+          <p>Create workspace credentials, continue to Stripe payment, then sign in once the subscription activates.</p>
         </details>
       </section>
     </main>
@@ -181,7 +191,16 @@
             <option value="enterprise">enterprise</option>
           </select>
 
-          <button id="signup_submit_btn" class="btn solid" type="submit">Create and Continue</button>
+          <div id="signup-plan-summary" class="signup-plan-summary">
+            You will continue to Stripe to enter payment details and activate your workspace.
+          </div>
+
+          <label class="consent-row">
+            <input id="signup_billing_ack" type="checkbox" required />
+            I understand page allowances and per-page overage charges for my selected plan.
+          </label>
+
+          <button id="signup_submit_btn" class="btn solid" type="submit">Create Account and Continue to Payment</button>
         </form>
 
         <p id="signup-message" class="message"></p>

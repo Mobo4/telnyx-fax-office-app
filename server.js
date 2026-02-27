@@ -38,6 +38,7 @@ const TENANTS_FILE = path.join(DATA_DIR, "tenants.json");
 const AUDIT_EVENTS_FILE = path.join(DATA_DIR, "audit_events.json");
 const IDEMPOTENCY_FILE = path.join(DATA_DIR, "idempotency_keys.json");
 const BILLING_FILE = path.join(DATA_DIR, "billing.json");
+const USAGE_FILE = path.join(DATA_DIR, "usage_metrics.json");
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const MAX_CONTACTS = 3000;
 const MAX_SEND_RECIPIENTS = 100;
@@ -70,6 +71,36 @@ const PLAN_LIMITS = {
     max_contacts: 50000,
     max_users: 500,
     max_recipients_per_send: 500
+  }
+};
+const PLAN_PRICING_POLICY = {
+  free: {
+    monthly_fee_usd: 0,
+    included_outbound_pages: 100,
+    included_inbound_pages: 100,
+    overage_outbound_per_page_usd: 0.03,
+    overage_inbound_per_page_usd: 0.03
+  },
+  starter: {
+    monthly_fee_usd: 18.88,
+    included_outbound_pages: 300,
+    included_inbound_pages: 300,
+    overage_outbound_per_page_usd: 0.021,
+    overage_inbound_per_page_usd: 0.021
+  },
+  pro: {
+    monthly_fee_usd: 49,
+    included_outbound_pages: 1800,
+    included_inbound_pages: 1800,
+    overage_outbound_per_page_usd: 0.018,
+    overage_inbound_per_page_usd: 0.018
+  },
+  enterprise: {
+    monthly_fee_usd: 149,
+    included_outbound_pages: 9000,
+    included_inbound_pages: 9000,
+    overage_outbound_per_page_usd: 0.015,
+    overage_inbound_per_page_usd: 0.015
   }
 };
 const BILLING_SUPPORTED_PLANS = Object.keys(PLAN_LIMITS).filter((plan) => plan !== "free");
@@ -825,6 +856,7 @@ function mapEventTypeToStatus(eventType, fallbackStatus) {
     "fax.media.processed": "media_processed",
     "fax.sending.started": "sending",
     "fax.delivered": "delivered",
+    "fax.received": "received",
     "fax.failed": "failed"
   };
   return map[eventType] || fallbackStatus || "unknown";
@@ -1262,6 +1294,150 @@ function getTenantPlanLimits(tenantId) {
   const billing = getTenantBilling(tenantId);
   const plan = (billing?.plan || defaultTenantPlan()).toLowerCase();
   return PLAN_LIMITS[plan] || PLAN_LIMITS.starter;
+}
+
+function pricingPolicyForPlan(planName) {
+  const normalized = normalizePlanName(planName || "free", "free");
+  return PLAN_PRICING_POLICY[normalized] || PLAN_PRICING_POLICY.starter;
+}
+
+function billingMonthFromDate(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value || Date.now());
+  if (Number.isNaN(date.getTime())) {
+    return new Date().toISOString().slice(0, 7);
+  }
+  return date.toISOString().slice(0, 7);
+}
+
+function previousBillingMonth(month) {
+  const target = (month || "").toString().trim();
+  if (!/^\d{4}-\d{2}$/.test(target)) {
+    return billingMonthFromDate(new Date(Date.now() - 31 * 24 * 60 * 60 * 1000));
+  }
+  const [yearText, monthText] = target.split("-");
+  const year = Number(yearText);
+  const index = Number(monthText) - 1;
+  const dt = new Date(Date.UTC(year, index, 1));
+  dt.setUTCMonth(dt.getUTCMonth() - 1);
+  return dt.toISOString().slice(0, 7);
+}
+
+function usageKey(tenantId, month) {
+  return `${normalizeTenantId(tenantId)}:${(month || "").toString().trim()}`;
+}
+
+function readUsageStore() {
+  return readJson(USAGE_FILE, { updated_at: new Date().toISOString(), items: {} });
+}
+
+function writeUsageStore(store) {
+  writeJson(USAGE_FILE, {
+    ...store,
+    updated_at: new Date().toISOString()
+  });
+}
+
+function zeroUsageRecord({ tenantId, month }) {
+  return {
+    tenant_id: normalizeTenantId(tenantId),
+    month: (month || billingMonthFromDate()).toString().trim(),
+    outbound_pages: 0,
+    inbound_pages: 0,
+    outbound_faxes: 0,
+    inbound_faxes: 0,
+    updated_at: new Date().toISOString()
+  };
+}
+
+function getTenantUsageRecord(tenantId, month) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const normalizedMonth = billingMonthFromDate(`${month || ""}-01`);
+  const store = readUsageStore();
+  const key = usageKey(normalizedTenantId, normalizedMonth);
+  const existing = store.items?.[key];
+  if (existing) {
+    return existing;
+  }
+  return zeroUsageRecord({ tenantId: normalizedTenantId, month: normalizedMonth });
+}
+
+function incrementTenantUsage({ tenantId, month, direction, pages = 0, faxes = 0 }) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const normalizedMonth = billingMonthFromDate(`${month || ""}-01`);
+  const usageDirection = (direction || "").toString().trim().toLowerCase() === "inbound" ? "inbound" : "outbound";
+  const pageCount = Math.max(0, Number(pages) || 0);
+  const faxCount = Math.max(0, Number(faxes) || 0);
+
+  const store = readUsageStore();
+  const key = usageKey(normalizedTenantId, normalizedMonth);
+  const base = store.items?.[key] || zeroUsageRecord({ tenantId: normalizedTenantId, month: normalizedMonth });
+  const next = {
+    ...base,
+    tenant_id: normalizedTenantId,
+    month: normalizedMonth,
+    outbound_pages:
+      usageDirection === "outbound" ? Number(base.outbound_pages || 0) + pageCount : Number(base.outbound_pages || 0),
+    inbound_pages:
+      usageDirection === "inbound" ? Number(base.inbound_pages || 0) + pageCount : Number(base.inbound_pages || 0),
+    outbound_faxes:
+      usageDirection === "outbound" ? Number(base.outbound_faxes || 0) + faxCount : Number(base.outbound_faxes || 0),
+    inbound_faxes:
+      usageDirection === "inbound" ? Number(base.inbound_faxes || 0) + faxCount : Number(base.inbound_faxes || 0),
+    updated_at: new Date().toISOString()
+  };
+  store.items = store.items || {};
+  store.items[key] = next;
+  writeUsageStore(store);
+  return next;
+}
+
+function tenantUsageSnapshot(tenantId, month = billingMonthFromDate()) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const targetMonth = billingMonthFromDate(`${month}-01`);
+  const tenant = getTenantById(normalizedTenantId);
+  const billing = getTenantBilling(normalizedTenantId);
+  const plan = normalizePlanName(billing?.plan || tenant?.plan || "free", "free");
+  const pricingPolicy = pricingPolicyForPlan(plan);
+  const usage = getTenantUsageRecord(normalizedTenantId, targetMonth);
+  const outboundPages = Number(usage.outbound_pages || 0);
+  const inboundPages = Number(usage.inbound_pages || 0);
+  const includedOutbound = Number(pricingPolicy.included_outbound_pages || 0);
+  const includedInbound = Number(pricingPolicy.included_inbound_pages || 0);
+  const overageOutboundPages = Math.max(0, outboundPages - includedOutbound);
+  const overageInboundPages = Math.max(0, inboundPages - includedInbound);
+  const outboundRate = Number(pricingPolicy.overage_outbound_per_page_usd || 0);
+  const inboundRate = Number(pricingPolicy.overage_inbound_per_page_usd || 0);
+  const overageOutboundCost = Number((overageOutboundPages * outboundRate).toFixed(4));
+  const overageInboundCost = Number((overageInboundPages * inboundRate).toFixed(4));
+  return {
+    tenant_id: normalizedTenantId,
+    month: targetMonth,
+    plan,
+    pricing_policy: pricingPolicy,
+    usage: {
+      outbound_pages: outboundPages,
+      inbound_pages: inboundPages,
+      outbound_faxes: Number(usage.outbound_faxes || 0),
+      inbound_faxes: Number(usage.inbound_faxes || 0)
+    },
+    included: {
+      outbound_pages: includedOutbound,
+      inbound_pages: includedInbound
+    },
+    remaining: {
+      outbound_pages: Math.max(0, includedOutbound - outboundPages),
+      inbound_pages: Math.max(0, includedInbound - inboundPages)
+    },
+    overage: {
+      outbound_pages: overageOutboundPages,
+      inbound_pages: overageInboundPages,
+      outbound_rate_usd: outboundRate,
+      inbound_rate_usd: inboundRate,
+      outbound_cost_usd: overageOutboundCost,
+      inbound_cost_usd: overageInboundCost,
+      estimated_total_cost_usd: Number((overageOutboundCost + overageInboundCost).toFixed(4))
+    }
+  };
 }
 
 function findTenantIdByStripeIdentity({ customerId = "", subscriptionId = "" } = {}) {
@@ -3868,6 +4044,97 @@ function localAttachmentsFromMediaUrls(mediaUrls) {
   );
 }
 
+function countPdfPagesFromBuffer(buffer) {
+  if (!buffer || !buffer.length) return 1;
+  const text = buffer.toString("latin1");
+  const matches = text.match(/\/Type\s*\/Page\b/g);
+  return Math.max(1, Array.isArray(matches) ? matches.length : 0);
+}
+
+function countTiffPagesFromBuffer(buffer) {
+  if (!buffer || buffer.length < 8) return 1;
+  const byteOrder = buffer.toString("ascii", 0, 2);
+  const littleEndian = byteOrder === "II";
+  const bigEndian = byteOrder === "MM";
+  if (!littleEndian && !bigEndian) return 1;
+
+  const read16 = (offset) => {
+    if (offset < 0 || offset + 2 > buffer.length) return 0;
+    return littleEndian ? buffer.readUInt16LE(offset) : buffer.readUInt16BE(offset);
+  };
+  const read32 = (offset) => {
+    if (offset < 0 || offset + 4 > buffer.length) return 0;
+    return littleEndian ? buffer.readUInt32LE(offset) : buffer.readUInt32BE(offset);
+  };
+
+  let ifdOffset = read32(4);
+  let pages = 0;
+  const seenOffsets = new Set();
+  while (ifdOffset > 0 && ifdOffset < buffer.length && !seenOffsets.has(ifdOffset) && pages < 10_000) {
+    seenOffsets.add(ifdOffset);
+    if (ifdOffset + 2 > buffer.length) break;
+    const entryCount = read16(ifdOffset);
+    const nextOffsetPos = ifdOffset + 2 + entryCount * 12;
+    if (nextOffsetPos + 4 > buffer.length) {
+      pages += 1;
+      break;
+    }
+    pages += 1;
+    ifdOffset = read32(nextOffsetPos);
+  }
+  return Math.max(1, pages);
+}
+
+function estimateLocalAttachmentPages(filePath) {
+  try {
+    const ext = path.extname(filePath || "").toLowerCase();
+    const buffer = fs.readFileSync(filePath);
+    if (ext === ".pdf") {
+      return countPdfPagesFromBuffer(buffer);
+    }
+    if (ext === ".tif" || ext === ".tiff") {
+      return countTiffPagesFromBuffer(buffer);
+    }
+    return 1;
+  } catch (error) {
+    return 1;
+  }
+}
+
+function extractPageCountFromWebhookPayload(payload) {
+  const candidates = [
+    payload?.page_count,
+    payload?.pages,
+    payload?.total_pages,
+    payload?.num_pages,
+    payload?.pageCount,
+    payload?.details?.page_count,
+    payload?.metadata?.page_count
+  ];
+  for (const candidate of candidates) {
+    const value = Number(candidate);
+    if (Number.isFinite(value) && value > 0) {
+      return Math.floor(value);
+    }
+  }
+  return null;
+}
+
+function estimateFaxPagesFromMediaUrls(mediaUrls) {
+  const urls = Array.isArray(mediaUrls) ? mediaUrls.filter(Boolean) : [];
+  if (!urls.length) return 1;
+  let total = 0;
+  for (const mediaUrl of urls) {
+    const localAttachment = localAttachmentFromMediaUrl(mediaUrl);
+    if (localAttachment?.path) {
+      total += estimateLocalAttachmentPages(localAttachment.path);
+    } else {
+      total += 1;
+    }
+  }
+  return Math.max(1, total);
+}
+
 function getPublicMediaUrl(req, filename) {
   return buildSignedMediaUrl(req, filename);
 }
@@ -4193,6 +4460,9 @@ app.post("/api/public/signup", async (req, res) => {
     if (BILLING_MODE === "paid" && requestedPlan === "free") {
       return res.status(400).json({ error: "Free plan is not available in paid billing mode." });
     }
+    if (BILLING_MODE === "paid" && (!STRIPE_ENABLED || !stripeClient)) {
+      return res.status(503).json({ error: "Signup payment is temporarily unavailable. Stripe is not configured." });
+    }
     if (BILLING_MODE === "paid" && STRIPE_ENABLED && !isStripeConfiguredForPlan(requestedPlan)) {
       return res.status(400).json({ error: `Signup plan "${requestedPlan}" is not configured for Stripe.` });
     }
@@ -4202,7 +4472,7 @@ app.post("/api/public/signup", async (req, res) => {
       companyName,
       email: adminEmail
     });
-    const requiresStripeCheckout = BILLING_MODE === "paid" && STRIPE_ENABLED;
+    const requiresStripeCheckout = BILLING_MODE === "paid";
     let checkoutUrl = "";
     let checkoutSessionId = "";
     let checkoutCustomerId = "";
@@ -5125,6 +5395,7 @@ app.post("/api/faxes", async (req, res) => {
           });
           finalMediaUrls = [coverPageMediaUrl, ...finalMediaUrls];
         }
+        const pageCountEstimate = estimateFaxPagesFromMediaUrls(finalMediaUrls);
 
         const fax = await telnyxSendFax({
           apiKey: cfg.telnyx_api_key,
@@ -5145,6 +5416,7 @@ app.post("/api/faxes", async (req, res) => {
           include_cover_page: includeCoverPage,
           cover_subject: coverSubject || "Fax Transmission",
           cover_message: coverMessage || "",
+          page_count_estimate: pageCountEstimate,
           failure_reason: null,
           telnyx_updated_at: fax.updated_at,
           created_at: fax.created_at,
@@ -5177,6 +5449,7 @@ app.post("/api/faxes", async (req, res) => {
           copy_email_sent: copyResult.sent,
           copy_email_reason: copyResult.reason,
           cover_page_added: Boolean(coverPageMediaUrl),
+          page_count_estimate: pageCountEstimate,
           error: null
         });
       } catch (recipientError) {
@@ -5188,6 +5461,7 @@ app.post("/api/faxes", async (req, res) => {
           copy_email_sent: false,
           copy_email_reason: "not_attempted",
           cover_page_added: false,
+          page_count_estimate: 0,
           error: recipientError.message || "Failed to queue fax."
         });
       }
@@ -5222,11 +5496,15 @@ app.post("/api/faxes", async (req, res) => {
     }
     const firstQueuedResult = results.find((item) => item.queued);
     const failedCount = results.filter((item) => !item.queued).length;
+    const estimatedQueuedPages = results
+      .filter((item) => item.queued)
+      .reduce((sum, item) => sum + Math.max(0, Number(item.page_count_estimate || 0)), 0);
     const responseBody = {
       fax_id: firstQueuedResult?.fax_id || null,
       fax_ids: faxIds,
       queued_count: faxIds.length,
       failed_count: failedCount,
+      estimated_queued_pages: estimatedQueuedPages,
       total_recipients: toNumbers.length,
       status: firstQueuedResult?.status || "queued",
       cover_page_added: includeCoverPage,
@@ -5725,6 +6003,54 @@ app.get("/api/admin/audit-events", requireAdmin, (req, res) => {
   return res.json({ items, tenant_id: tenantId, limit });
 });
 
+app.get("/api/admin/dashboard", requireAdmin, (req, res) => {
+  const tenantId = normalizeTenantId(req.tenant_id);
+  const tenant = getTenantById(tenantId);
+  if (!tenant) {
+    return res.status(404).json({ error: "Tenant not found." });
+  }
+  const currentMonth = billingMonthFromDate();
+  const priorMonth = previousBillingMonth(currentMonth);
+  const billing = getTenantBilling(tenantId);
+  const usageCurrent = tenantUsageSnapshot(tenantId, currentMonth);
+  const usagePrevious = tenantUsageSnapshot(tenantId, priorMonth);
+
+  const allFaxes = [
+    ...Object.values(readStore().items || {}).filter((item) => normalizeTenantId(item.tenant_id) === tenantId),
+    ...Object.values(readArchiveStore().items || {}).filter((item) => normalizeTenantId(item.tenant_id) === tenantId)
+  ];
+  const unique = Array.from(new Map(allFaxes.map((item) => [item.id, item])).values());
+  const summary = {
+    total_faxes: unique.length,
+    sent_total: unique.filter((item) => (item.direction || "").toString().toLowerCase() !== "inbound").length,
+    received_total: unique.filter((item) => (item.direction || "").toString().toLowerCase() === "inbound").length,
+    delivered_total: unique.filter((item) => (item.status || "").toString().toLowerCase() === "delivered").length,
+    failed_total: unique.filter((item) => (item.status || "").toString().toLowerCase() === "failed").length,
+    pending_total: unique.filter((item) => {
+      const status = (item.status || "").toString().toLowerCase();
+      return !["delivered", "failed", "received"].includes(status);
+    }).length
+  };
+
+  return res.json({
+    tenant_id: tenantId,
+    month: currentMonth,
+    prior_month: priorMonth,
+    billing,
+    pricing_policy: pricingPolicyForPlan(billing?.plan || tenant?.plan || "free"),
+    usage_current_month: usageCurrent,
+    usage_previous_month: usagePrevious,
+    fax_summary: summary,
+    system: {
+      uptime_seconds: Math.floor(process.uptime()),
+      d1_users_enabled: D1_USERS_ENABLED,
+      d1_app_stores_enabled: D1_APP_STORES_ENABLED,
+      webhook_signature_required: WEBHOOK_SIGNATURE_REQUIRED,
+      stripe_enabled: STRIPE_ENABLED
+    }
+  });
+});
+
 app.get("/api/admin/billing", requireAdmin, (req, res) => {
   const tenantId = normalizeTenantId(req.tenant_id);
   const tenant = getTenantById(tenantId);
@@ -5733,6 +6059,7 @@ app.get("/api/admin/billing", requireAdmin, (req, res) => {
   }
   const billing = getTenantBilling(tenantId);
   const limits = getTenantPlanLimits(tenantId);
+  const usageCurrent = tenantUsageSnapshot(tenantId, billingMonthFromDate());
   const stripeConfiguredPlans = Object.entries(STRIPE_PRICE_BY_PLAN)
     .filter(([, priceId]) => Boolean(priceId))
     .map(([plan]) => plan);
@@ -5748,6 +6075,8 @@ app.get("/api/admin/billing", requireAdmin, (req, res) => {
     tenant_id: tenantId,
     billing_mode: BILLING_MODE,
     billing,
+    pricing_policy: pricingPolicyForPlan(billing?.plan || tenant?.plan || "free"),
+    usage_current_month: usageCurrent,
     limits,
     supported_plans: supportedPlans,
     stripe: {
@@ -6285,6 +6614,7 @@ app.post(["/api/webhooks/telnyx", "/telnyx/webhook"], (req, res) => {
     if (parsed.faxId) {
       const tenantId = getFaxTenantId(parsed.faxId, fallbackTenantId);
       const existingFax = getFaxById(parsed.faxId) || {};
+      const parsedPageCount = extractPageCountFromWebhookPayload(parsed.payload);
       const failure = classifyFaxFailureReason(parsed.failureReason);
       const mergedFax = {
         ...existingFax,
@@ -6303,6 +6633,44 @@ app.post(["/api/webhooks/telnyx", "/telnyx/webhook"], (req, res) => {
         failure_support_hint: failure.support_hint
       }, tenantId);
       appendEvent(parsed.faxId, parsed.eventType, parsed.payload, tenantId);
+
+      const mergedDirection = (mergedFax.direction || "").toString().trim().toLowerCase();
+      const isInboundFax = mergedDirection === "inbound" || parsed.eventType === "fax.received";
+      const usageMonth = billingMonthFromDate();
+      const resolvedPageCount = Math.max(
+        1,
+        Number(parsedPageCount || mergedFax.page_count_estimate || existingFax.page_count_estimate || 1)
+      );
+      if (!isInboundFax && parsed.status === "delivered" && !existingFax.usage_recorded_outbound_at) {
+        incrementTenantUsage({
+          tenantId,
+          month: usageMonth,
+          direction: "outbound",
+          pages: resolvedPageCount,
+          faxes: 1
+        });
+        upsertFax(parsed.faxId, {
+          id: parsed.faxId,
+          page_count_reported: parsedPageCount || null,
+          billed_page_count: resolvedPageCount,
+          usage_recorded_outbound_at: new Date().toISOString()
+        }, tenantId);
+      }
+      if (isInboundFax && ["received", "delivered"].includes((parsed.status || "").toLowerCase()) && !existingFax.usage_recorded_inbound_at) {
+        incrementTenantUsage({
+          tenantId,
+          month: usageMonth,
+          direction: "inbound",
+          pages: resolvedPageCount,
+          faxes: 1
+        });
+        upsertFax(parsed.faxId, {
+          id: parsed.faxId,
+          page_count_reported: parsedPageCount || null,
+          billed_page_count: resolvedPageCount,
+          usage_recorded_inbound_at: new Date().toISOString()
+        }, tenantId);
+      }
 
       const retryJob = getRetryJobByFaxId(parsed.faxId, tenantId);
       const isOutbound = (mergedFax.direction || "").toString().toLowerCase() !== "inbound";

@@ -178,6 +178,40 @@
 
         <section id="admin-panel" class="hidden">
           <section class="card">
+            <div class="card-header">
+              <h2>Admin Dashboard</h2>
+              <button id="admin-dashboard-refresh-btn" type="button" class="secondary">Refresh Metrics</button>
+            </div>
+            <div class="dashboard-grid">
+              <div class="subtle-card">
+                <h3>Current Usage</h3>
+                <p><strong>Billing Month:</strong> <span id="dash_current_month">-</span></p>
+                <p><strong>Outbound Pages:</strong> <span id="dash_outbound_pages">-</span></p>
+                <p><strong>Inbound Pages:</strong> <span id="dash_inbound_pages">-</span></p>
+                <p><strong>Estimated Overage:</strong> <span id="dash_overage_total">-</span></p>
+              </div>
+              <div class="subtle-card">
+                <h3>Plan Policy</h3>
+                <p><strong>Plan:</strong> <span id="dash_plan_name">-</span></p>
+                <p><strong>Included Outbound:</strong> <span id="dash_included_outbound">-</span></p>
+                <p><strong>Included Inbound:</strong> <span id="dash_included_inbound">-</span></p>
+                <p><strong>Overage Rate:</strong> <span id="dash_overage_rate">-</span></p>
+              </div>
+              <div class="subtle-card">
+                <h3>Fax Operations</h3>
+                <p><strong>Total Faxes:</strong> <span id="dash_total_faxes">-</span></p>
+                <p><strong>Delivered:</strong> <span id="dash_delivered_total">-</span></p>
+                <p><strong>Failed:</strong> <span id="dash_failed_total">-</span></p>
+                <p><strong>Pending:</strong> <span id="dash_pending_total">-</span></p>
+              </div>
+            </div>
+            <p class="helper-text">
+              Usage counts follow delivered/received webhook outcomes. Overages are estimated from counted pages and plan rates.
+            </p>
+            <p id="dashboard-message" class="message"></p>
+          </section>
+
+          <section class="card">
             <h2>Admin Settings</h2>
             <form id="settings-form">
               <label for="setting_connection_id">Telnyx Connection ID</label>
@@ -260,6 +294,7 @@
               <p><strong>Status:</strong> <span id="billing_status_value">-</span></p>
               <p><strong>Stripe Customer:</strong> <span id="billing_customer_value" class="mono">-</span></p>
               <p><strong>Stripe Subscription:</strong> <span id="billing_subscription_value" class="mono">-</span></p>
+              <p><strong>Cycle Overage Estimate:</strong> <span id="billing_overage_estimate">-</span></p>
             </div>
 
             <form id="billing-form">

@@ -55,6 +55,7 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - Bulk: `/api/faxes/bulk`, `/api/faxes/bulk-jobs`
 - Retry internals: busy retry queue worker (server-side only, webhook-driven)
 - Admin: `/api/admin/settings`, `/api/admin/telnyx/fax-application`, `/api/admin/users`
+- Admin dashboard: `/api/admin/dashboard`
 - Archive: `/api/faxes/archive` (admin-only)
 - Health: `/api/health` (includes hosting/storage diagnostics)
 - Media: `/media/:filename?exp=...&sig=...` (signed public fetch URL for Telnyx media retrieval)
@@ -199,6 +200,24 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - Cancellation path:
   - admin opens Stripe portal via `POST /api/admin/billing/portal-session`
   - tenant billing status syncs back via `/api/webhooks/stripe` subscription events.
+- Pricing policy now supports plan incentives:
+  - `starter`: lower included pages, highest overage rate.
+  - `pro`: higher included pages, lower overage rate than starter.
+  - `enterprise`: highest included pages, lowest overage rate.
+
+## Usage and Overage Tracking
+- Store: `/Users/alex/Documents/Projects/Telnyx/data/usage_metrics.json`
+- Usage is tracked by `tenant + billing month`.
+- Outbound usage increment:
+  - on webhook transition to delivered for outbound fax (count once per fax ID).
+- Inbound usage increment:
+  - on webhook transition to received/delivered for inbound fax (count once per fax ID).
+- Page count precedence:
+  - webhook-reported page count when provided
+  - fallback to server-side page estimate from fax media attachments
+- Current-cycle usage and estimated overage are exposed in:
+  - `GET /api/admin/billing` (`usage_current_month`, `pricing_policy`)
+  - `GET /api/admin/dashboard` (`usage_current_month`, `usage_previous_month`, `fax_summary`)
 
 ## Auth/User Persistence Notes
 - User store is normalized on read/write (supports legacy `items` map or array layouts).

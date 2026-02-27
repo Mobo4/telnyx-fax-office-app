@@ -80,6 +80,21 @@ const billingCurrentPlan = document.getElementById("billing_current_plan");
 const billingStatusValue = document.getElementById("billing_status_value");
 const billingCustomerValue = document.getElementById("billing_customer_value");
 const billingSubscriptionValue = document.getElementById("billing_subscription_value");
+const billingOverageEstimate = document.getElementById("billing_overage_estimate");
+const dashboardRefreshBtn = document.getElementById("admin-dashboard-refresh-btn");
+const dashboardMessage = document.getElementById("dashboard-message");
+const dashCurrentMonth = document.getElementById("dash_current_month");
+const dashOutboundPages = document.getElementById("dash_outbound_pages");
+const dashInboundPages = document.getElementById("dash_inbound_pages");
+const dashOverageTotal = document.getElementById("dash_overage_total");
+const dashPlanName = document.getElementById("dash_plan_name");
+const dashIncludedOutbound = document.getElementById("dash_included_outbound");
+const dashIncludedInbound = document.getElementById("dash_included_inbound");
+const dashOverageRate = document.getElementById("dash_overage_rate");
+const dashTotalFaxes = document.getElementById("dash_total_faxes");
+const dashDeliveredTotal = document.getElementById("dash_delivered_total");
+const dashFailedTotal = document.getElementById("dash_failed_total");
+const dashPendingTotal = document.getElementById("dash_pending_total");
 
 const createUserForm = document.getElementById("create-user-form");
 const usersMessage = document.getElementById("users-message");
@@ -128,6 +143,9 @@ let state = {
     supportedPlans: [],
     stripeEnabled: false
   },
+  dashboard: {
+    loaded: false
+  },
   appSettings: {
     outbound_copy_enabled: true,
     outbound_copy_email: "eyecarecenteroc@gmail.com",
@@ -160,6 +178,13 @@ function formatDate(value) {
   const dt = new Date(value);
   if (Number.isNaN(dt.getTime())) return value;
   return dt.toLocaleString();
+}
+
+function formatUsd(value) {
+  const amount = Number(value || 0);
+  return Number.isFinite(amount)
+    ? amount.toLocaleString(undefined, { style: "currency", currency: "USD" })
+    : "$0.00";
 }
 
 function parseTagsInput(value) {
@@ -1241,6 +1266,8 @@ function applyBillingUiState() {
 async function loadBillingSettings() {
   const body = await api("/api/admin/billing");
   const billing = body.billing || {};
+  const usage = body.usage_current_month || {};
+  const usageOverage = usage.overage || {};
   const supportedPlans = Array.isArray(body.supported_plans) ? body.supported_plans : [];
   const stripeEnabled = body?.stripe?.enabled === true;
   state.billing = {
@@ -1260,6 +1287,9 @@ async function loadBillingSettings() {
   }
   if (billingSubscriptionValue) {
     billingSubscriptionValue.textContent = billing.stripe_subscription_id || "-";
+  }
+  if (billingOverageEstimate) {
+    billingOverageEstimate.textContent = formatUsd(usageOverage.estimated_total_cost_usd || 0);
   }
 
   if (billingPlanSelect) {
@@ -1285,6 +1315,42 @@ async function loadBillingSettings() {
       "Stripe is not enabled on this server yet. Set billing mode to paid and configure Stripe env vars."
     );
   }
+}
+
+function renderDashboard(body) {
+  const usageCurrent = body?.usage_current_month || {};
+  const usageCounts = usageCurrent?.usage || {};
+  const usageOverage = usageCurrent?.overage || {};
+  const pricing = usageCurrent?.pricing_policy || body?.pricing_policy || {};
+  const summary = body?.fax_summary || {};
+
+  if (dashCurrentMonth) dashCurrentMonth.textContent = usageCurrent.month || body?.month || "-";
+  if (dashOutboundPages) dashOutboundPages.textContent = `${Number(usageCounts.outbound_pages || 0)} pages`;
+  if (dashInboundPages) dashInboundPages.textContent = `${Number(usageCounts.inbound_pages || 0)} pages`;
+  if (dashOverageTotal) dashOverageTotal.textContent = formatUsd(usageOverage.estimated_total_cost_usd || 0);
+  if (dashPlanName) dashPlanName.textContent = usageCurrent.plan || body?.billing?.plan || "-";
+  if (dashIncludedOutbound) {
+    dashIncludedOutbound.textContent = `${Number(pricing.included_outbound_pages || 0)} pages`;
+  }
+  if (dashIncludedInbound) {
+    dashIncludedInbound.textContent = `${Number(pricing.included_inbound_pages || 0)} pages`;
+  }
+  if (dashOverageRate) {
+    dashOverageRate.textContent = `${formatUsd(pricing.overage_outbound_per_page_usd || 0)}/page outbound, ${formatUsd(
+      pricing.overage_inbound_per_page_usd || 0
+    )}/page inbound`;
+  }
+  if (dashTotalFaxes) dashTotalFaxes.textContent = `${Number(summary.total_faxes || 0)}`;
+  if (dashDeliveredTotal) dashDeliveredTotal.textContent = `${Number(summary.delivered_total || 0)}`;
+  if (dashFailedTotal) dashFailedTotal.textContent = `${Number(summary.failed_total || 0)}`;
+  if (dashPendingTotal) dashPendingTotal.textContent = `${Number(summary.pending_total || 0)}`;
+}
+
+async function loadAdminDashboard() {
+  const body = await api("/api/admin/dashboard");
+  state.dashboard.loaded = true;
+  renderDashboard(body);
+  return body;
 }
 
 function renderUserRow(item) {
@@ -1367,6 +1433,7 @@ async function initAfterLogin() {
   setLastUrlUI(state.user?.last_media_url || "");
   if (state.user?.role === "admin") {
     const adminLoaders = [
+      { label: "dashboard", run: () => loadAdminDashboard() },
       { label: "admin settings", run: () => loadAdminSettings() },
       { label: "users", run: () => loadUsers() },
       { label: "billing", run: () => loadBillingSettings() }
@@ -1872,6 +1939,21 @@ faxAppForm.addEventListener("submit", async (event) => {
 if (billingForm) {
   billingForm.addEventListener("submit", (event) => {
     event.preventDefault();
+  });
+}
+
+if (dashboardRefreshBtn) {
+  dashboardRefreshBtn.addEventListener("click", async () => {
+    setMessage(dashboardMessage, "");
+    dashboardRefreshBtn.disabled = true;
+    try {
+      await Promise.all([loadAdminDashboard(), loadBillingSettings()]);
+      setMessage(dashboardMessage, "Dashboard refreshed.");
+    } catch (error) {
+      setMessage(dashboardMessage, error.message || "Could not load dashboard.");
+    } finally {
+      dashboardRefreshBtn.disabled = false;
+    }
   });
 }
 

@@ -114,6 +114,27 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Admin can manage/cancel subscription in Stripe Customer Portal.
 - Billing status, plan, Stripe customer ID, and Stripe subscription ID are visible in admin billing card.
 - Stripe webhooks must sync subscription lifecycle events into tenant billing state.
+- Pricing tiers include upgrade incentives:
+  - higher tiers include materially higher monthly page allowances
+  - higher tiers have lower per-page overage rates than lower tiers
+- Public signup must clearly disclose:
+  - included outbound/inbound pages by plan
+  - overage per-page rates by plan
+  - payment continuation to Stripe during signup flow
+- Admin dashboard must show:
+  - current billing month usage (outbound/inbound pages + fax counts)
+  - included vs remaining pages
+  - estimated overage dollars for current cycle
+  - basic operational fax status metrics (delivered/failed/pending)
+
+### Usage Metering Policy
+- Usage is tracked monthly per tenant.
+- Outbound pages are counted when fax delivery is confirmed via webhook.
+- Inbound pages are counted when inbound delivery/receipt is confirmed via webhook.
+- Page count source:
+  - provider-reported webhook page count when available
+  - fallback to server-side page estimate from media files for operational continuity
+- Overage estimate is computed from measured pages against plan allowances and per-page rates.
 
 ### Backend Validation
 - `/api/uploads/batch` enforces max 5 files.

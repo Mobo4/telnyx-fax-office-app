@@ -59,6 +59,9 @@
 - [x] Add public marketing + signup flow (`/` marketing site, `/app` workspace, `/api/public/signup` + Stripe checkout redirect).
 - [x] Run end-to-end stabilization smoke tests (local + Render) for signup/login/role guard and route split.
 - [x] Validate paid signup activation gate (pre-payment login blocked until Stripe webhook activation).
+- [x] Add tier incentive pricing (higher included pages + lower overage rates on higher plans).
+- [x] Add admin dashboard API/UI for usage and operational metrics.
+- [x] Add billing page-count policy and estimated overage visibility in admin area and public signup page.
 
 ## Next Tasks
 - [ ] Execute commercial SaaS program in `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-commercial-saas-hipaa.md`.
