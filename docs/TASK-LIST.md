@@ -52,6 +52,8 @@
 - [x] Keep local login available and restrict password reset to local-provider users.
 - [x] Add Google auth environment/config documentation and implementation PRD.
 - [x] Add explicit account-link flow so existing logged-in users can attach Google auth to their current account.
+- [x] Add busy-line retry queue (3x @ 10-minute interval configurable) and terminal failure alert email.
+- [x] Expand phone validation message to clearly include international E.164 support.
 
 ## Next Tasks
 - [ ] Execute commercial SaaS program in `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-commercial-saas-hipaa.md`.

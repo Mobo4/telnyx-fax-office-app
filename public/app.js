@@ -1398,7 +1398,7 @@ sendForm.addEventListener("submit", async (event) => {
     }
     if (invalidRecipient) {
       throw new Error(
-        `Invalid phone number format: ${invalidRecipient}. Use 10-digit US format (7145580642) or E.164 (+17145551234).`
+        `Invalid phone number format: ${invalidRecipient}. Use US 10-digit format (7145580642) or full E.164 international format (example: +17145551234, +442071838750).`
       );
     }
     if (fileValidationError) {

@@ -31,6 +31,7 @@ const USERS_FILE = path.join(DATA_DIR, "users.json");
 const CONFIG_FILE = path.join(DATA_DIR, "config.json");
 const CONTACTS_FILE = path.join(DATA_DIR, "contacts.json");
 const BULK_JOBS_FILE = path.join(DATA_DIR, "bulk_jobs.json");
+const FAX_RETRY_QUEUE_FILE = path.join(DATA_DIR, "fax_retry_queue.json");
 const LOCAL_SESSIONS_FILE = path.join(DATA_DIR, "sessions_local.json");
 const TENANTS_FILE = path.join(DATA_DIR, "tenants.json");
 const AUDIT_EVENTS_FILE = path.join(DATA_DIR, "audit_events.json");
@@ -100,6 +101,11 @@ const AUTH_RATE_MAX_ATTEMPTS_PER_IP = Math.max(
 const AUTH_LOCKOUT_THRESHOLD = Math.max(3, Number(process.env.AUTH_LOCKOUT_THRESHOLD || 8));
 const AUTH_LOCKOUT_MS = Math.max(60_000, Number(process.env.AUTH_LOCKOUT_MS || 15 * 60 * 1000));
 const BULK_WORKER_POLL_MS = Math.max(5_000, Number(process.env.BULK_WORKER_POLL_MS || 15_000));
+const BUSY_RETRY_ENABLED = process.env.BUSY_RETRY_ENABLED !== "false";
+const BUSY_RETRY_MAX_ATTEMPTS = Math.max(0, Math.min(10, Number(process.env.BUSY_RETRY_MAX_ATTEMPTS || 3)));
+const BUSY_RETRY_INTERVAL_MS = Math.max(60_000, Number(process.env.BUSY_RETRY_INTERVAL_MS || 10 * 60 * 1000));
+const BUSY_RETRY_POLL_MS = Math.max(5_000, Number(process.env.BUSY_RETRY_POLL_MS || 30_000));
+const FAX_FAILURE_ALERT_EMAIL = (process.env.FAX_FAILURE_ALERT_EMAIL || "").trim();
 const SESSION_MAX_AGE_MS = Math.max(60_000, Number(process.env.SESSION_MAX_AGE_MS || 12 * 60 * 60 * 1000));
 const LOCAL_SESSION_STORE_ENABLED = process.env.LOCAL_SESSION_STORE_ENABLED !== "false";
 const GOOGLE_AUTH_ENABLED = process.env.GOOGLE_AUTH_ENABLED === "true";
@@ -125,15 +131,18 @@ const D1_SYNC_STORE_FILENAMES = new Set([
   "faxes_archive.json",
   "config.json",
   "contacts.json",
-  "bulk_jobs.json"
+  "bulk_jobs.json",
+  "fax_retry_queue.json"
 ]);
 
 let isBulkProcessorRunning = false;
+let isBusyRetryProcessorRunning = false;
 let isD1AppStoreHydration = false;
 let d1AppStoresReady = false;
 let d1StoreSyncTimer = null;
 const pendingD1StoreSync = new Map();
 let bulkWorkerInterval = null;
+let busyRetryInterval = null;
 let uploadCleanupInterval = null;
 const authIpAttemptState = new Map();
 const authUserAttemptState = new Map();
@@ -706,6 +715,110 @@ function mapEventTypeToStatus(eventType, fallbackStatus) {
   return map[eventType] || fallbackStatus || "unknown";
 }
 
+function classifyFaxFailureReason(reasonRaw) {
+  const reason = (reasonRaw || "").toString().trim().toLowerCase();
+  if (!reason) {
+    return {
+      code: "",
+      category: "unknown",
+      user_message: "Fax failed for an unknown reason.",
+      support_hint: "No failure reason was returned by carrier."
+    };
+  }
+
+  const byCategory = {
+    busy: new Set(["receiver_calling_the_number_is_busy", "user_busy"]),
+    no_answer: new Set(["receiver_no_answer", "receiver_no_response", "fax_initial_communication_timeout"]),
+    invalid_number: new Set([
+      "destination_invalid",
+      "receiver_unallocated_number",
+      "receiver_invalid_number_format",
+      "receiver_incompatible_destination"
+    ]),
+    rejected: new Set(["receiver_decline"]),
+    unreachable: new Set(["destination_unreachable", "service_unavailable"]),
+    account_or_limits: new Set([
+      "account_disabled",
+      "no_outbound_profile",
+      "destination_not_in_service_plan",
+      "destination_not_in_countries_whitelist",
+      "connection_channel_limit_exceeded",
+      "outbound_profile_channel_limit_exceeded",
+      "user_channel_limit_exceeded",
+      "outbound_profile_daily_spend_limit_exceeded"
+    ]),
+    signaling_or_media: new Set([
+      "fax_signaling_error",
+      "receiver_recovery_on_timer_expire",
+      "receiver_communication_error"
+    ]),
+    canceled: new Set(["canceled"])
+  };
+
+  let category = "other";
+  Object.entries(byCategory).forEach(([name, values]) => {
+    if (values.has(reason)) {
+      category = name;
+    }
+  });
+
+  const messages = {
+    busy: {
+      user: "Line was busy.",
+      support: "Destination returned busy during fax negotiation."
+    },
+    no_answer: {
+      user: "Recipient did not answer the fax call.",
+      support: "No fax handshake or response from destination."
+    },
+    invalid_number: {
+      user: "Recipient fax number appears invalid or not provisioned.",
+      support: "Carrier reported invalid/unallocated/incompatible destination."
+    },
+    rejected: {
+      user: "Recipient declined the fax call.",
+      support: "Remote side rejected the call (receiver_decline)."
+    },
+    unreachable: {
+      user: "Recipient could not be reached.",
+      support: "Destination unreachable or service unavailable."
+    },
+    account_or_limits: {
+      user: "Sending failed because account/profile limits or configuration blocked the call.",
+      support: "Check Telnyx account status, outbound profile, spend limits, and country restrictions."
+    },
+    signaling_or_media: {
+      user: "Fax transmission failed due to network/signaling issues.",
+      support: "Carrier signaling/media error during fax session."
+    },
+    canceled: {
+      user: "Fax was canceled.",
+      support: "Fax canceled before completion."
+    },
+    other: {
+      user: "Fax failed.",
+      support: "Review raw failure code and Telnyx fax events."
+    },
+    unknown: {
+      user: "Fax failed for an unknown reason.",
+      support: "No failure reason was returned by carrier."
+    }
+  };
+
+  const chosen = messages[category] || messages.other;
+  return {
+    code: reason,
+    category,
+    user_message: chosen.user,
+    support_hint: chosen.support
+  };
+}
+
+function isBusyFailureReason(reasonRaw) {
+  const failure = classifyFaxFailureReason(reasonRaw);
+  return failure.category === "busy";
+}
+
 function ensureDataFiles() {
   ensureDataDir();
   ensureUploadsDir();
@@ -741,6 +854,9 @@ function ensureDataFiles() {
 
   if (!fs.existsSync(BULK_JOBS_FILE)) {
     writeJson(BULK_JOBS_FILE, { updated_at: new Date().toISOString(), items: {} });
+  }
+  if (!fs.existsSync(FAX_RETRY_QUEUE_FILE)) {
+    writeJson(FAX_RETRY_QUEUE_FILE, { updated_at: new Date().toISOString(), items: {} });
   }
   if (!fs.existsSync(TENANTS_FILE)) {
     writeJson(TENANTS_FILE, {
@@ -1363,6 +1479,70 @@ function writeBulkJobsStore(store) {
     ...store,
     updated_at: new Date().toISOString()
   });
+}
+
+function readFaxRetryQueueStore() {
+  return readJson(FAX_RETRY_QUEUE_FILE, { updated_at: new Date().toISOString(), items: {} });
+}
+
+function writeFaxRetryQueueStore(store) {
+  writeJson(FAX_RETRY_QUEUE_FILE, {
+    ...store,
+    updated_at: new Date().toISOString()
+  });
+}
+
+function getRetryJobByFaxId(faxId, tenantId = DEFAULT_TENANT_ID) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const store = readFaxRetryQueueStore();
+  return (
+    Object.values(store.items || {}).find((item) => {
+      if (normalizeTenantId(item.tenant_id) !== normalizedTenantId) {
+        return false;
+      }
+      return item.root_fax_id === faxId || item.current_fax_id === faxId;
+    }) || null
+  );
+}
+
+function upsertRetryJob(jobId, patch, tenantId = DEFAULT_TENANT_ID) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const store = readFaxRetryQueueStore();
+  const existing = store.items[jobId] || {
+    id: jobId,
+    tenant_id: normalizedTenantId,
+    root_fax_id: "",
+    current_fax_id: "",
+    status: "pending",
+    retries_attempted: 0,
+    max_retries: BUSY_RETRY_MAX_ATTEMPTS,
+    alert_sent: false,
+    history: [],
+    created_at: new Date().toISOString()
+  };
+  const next = {
+    ...existing,
+    ...patch,
+    tenant_id: normalizedTenantId,
+    updated_at: new Date().toISOString()
+  };
+  store.items[jobId] = next;
+  writeFaxRetryQueueStore(store);
+  return next;
+}
+
+function updateRetryJob(jobId, updater, tenantId = DEFAULT_TENANT_ID) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const store = readFaxRetryQueueStore();
+  const existing = store.items[jobId];
+  if (!existing || normalizeTenantId(existing.tenant_id) !== normalizedTenantId) {
+    return null;
+  }
+  const next = updater({ ...existing });
+  next.updated_at = new Date().toISOString();
+  store.items[jobId] = next;
+  writeFaxRetryQueueStore(store);
+  return next;
 }
 
 function sanitizeUser(user) {
@@ -2873,13 +3053,15 @@ async function processQueuedBulkJobs() {
             from: fax.from,
             to: fax.to,
             media_url: fax.media_url,
+            media_urls: [nextJob.media_url],
             failure_reason: null,
             telnyx_updated_at: fax.updated_at,
             created_at: fax.created_at,
             contact_id: contact.id,
             contact_name: contact.name,
             contact_tags: normalizeTags(contact.tags),
-            bulk_job_id: nextJob.id
+            bulk_job_id: nextJob.id,
+            requested_by: nextJob.created_by || ""
           }, nextJob.tenant_id);
           appendEvent(fax.id, "fax.queued", fax, nextJob.tenant_id);
 
@@ -2958,6 +3140,291 @@ async function processQueuedBulkJobs() {
   }
 }
 
+function scheduleBusyRetryFromFailure({
+  fax,
+  tenantId = DEFAULT_TENANT_ID,
+  failureReason = "",
+  reasonClass = null
+}) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  if (!BUSY_RETRY_ENABLED || BUSY_RETRY_MAX_ATTEMPTS <= 0) {
+    return null;
+  }
+  if (!fax?.id) {
+    return null;
+  }
+  const mediaUrls = Array.isArray(fax.media_urls)
+    ? fax.media_urls.filter(Boolean)
+    : parseMediaUrlsInput(fax.media_url || "");
+  if (!mediaUrls.length) {
+    return null;
+  }
+  const failure = reasonClass || classifyFaxFailureReason(failureReason);
+  if (failure.category !== "busy") {
+    return null;
+  }
+
+  const existing = getRetryJobByFaxId(fax.id, normalizedTenantId);
+  if (existing) {
+    if ((existing.retries_attempted || 0) >= (existing.max_retries || BUSY_RETRY_MAX_ATTEMPTS)) {
+      return updateRetryJob(existing.id, (job) => ({
+        ...job,
+        status: "failed",
+        next_attempt_at: null,
+        completed_at: new Date().toISOString(),
+        last_failure_reason: failure.code || failureReason || ""
+      }), normalizedTenantId);
+    }
+    return updateRetryJob(existing.id, (job) => ({
+      ...job,
+      status: "pending",
+      current_fax_id: fax.id,
+      next_attempt_at: new Date(Date.now() + BUSY_RETRY_INTERVAL_MS).toISOString(),
+      last_failure_reason: failure.code || failureReason || "",
+      history: [
+        ...(Array.isArray(job.history) ? job.history : []),
+        {
+          at: new Date().toISOString(),
+          event: "busy_failure_scheduled",
+          fax_id: fax.id,
+          failure_reason: failure.code || failureReason || ""
+        }
+      ]
+    }), normalizedTenantId);
+  }
+
+  const retryId = crypto.randomUUID();
+  return upsertRetryJob(retryId, {
+    tenant_id: normalizedTenantId,
+    root_fax_id: fax.id,
+    current_fax_id: fax.id,
+    from: fax.from || "",
+    to: fax.to || "",
+    media_urls: mediaUrls,
+    requested_by: fax.requested_by || "",
+    status: "pending",
+    retries_attempted: 0,
+    max_retries: BUSY_RETRY_MAX_ATTEMPTS,
+    alert_sent: false,
+    next_attempt_at: new Date(Date.now() + BUSY_RETRY_INTERVAL_MS).toISOString(),
+    last_failure_reason: failure.code || failureReason || "",
+    history: [
+      {
+        at: new Date().toISOString(),
+        event: "busy_failure_scheduled",
+        fax_id: fax.id,
+        failure_reason: failure.code || failureReason || ""
+      }
+    ],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  }, normalizedTenantId);
+}
+
+async function markRetryJobFinalFailureAndAlert(job, {
+  tenantId = DEFAULT_TENANT_ID,
+  failureReason = "",
+  fax = null
+} = {}) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  if (!job?.id) {
+    return;
+  }
+  const failure = classifyFaxFailureReason(failureReason || job.last_failure_reason || "");
+  const finalFax = fax || {
+    id: job.current_fax_id || job.root_fax_id,
+    from: job.from || "",
+    to: job.to || "",
+    status: "failed"
+  };
+
+  let updated = updateRetryJob(job.id, (existing) => ({
+    ...existing,
+    status: "failed",
+    next_attempt_at: null,
+    completed_at: new Date().toISOString(),
+    last_failure_reason: failure.code || failureReason || "",
+    history: [
+      ...(Array.isArray(existing.history) ? existing.history : []),
+      {
+        at: new Date().toISOString(),
+        event: "final_failure",
+        fax_id: finalFax.id || "",
+        failure_reason: failure.code || failureReason || ""
+      }
+    ]
+  }), normalizedTenantId);
+  if (!updated) {
+    return;
+  }
+  if (updated.alert_sent) {
+    return;
+  }
+  const cfg = getRuntimeConfig(normalizedTenantId);
+  const alertResult = await sendFaxFailureAlertEmail({
+    cfg,
+    fax: finalFax,
+    failureReason: failure.code || failureReason || "",
+    retriesAttempted: Number(updated.retries_attempted || 0),
+    maxRetries: Number(updated.max_retries || BUSY_RETRY_MAX_ATTEMPTS),
+    retryEnabled: BUSY_RETRY_ENABLED,
+    retryJobId: updated.id,
+    tenantId: normalizedTenantId
+  }).catch((error) => ({ sent: false, reason: error.message || "alert_send_failed" }));
+
+  updated = updateRetryJob(updated.id, (existing) => ({
+    ...existing,
+    alert_sent: alertResult.sent === true,
+    alert_reason: alertResult.reason || ""
+  }), normalizedTenantId) || updated;
+}
+
+async function processBusyRetryQueue() {
+  if (!BUSY_RETRY_ENABLED || BUSY_RETRY_MAX_ATTEMPTS <= 0) {
+    return;
+  }
+  if (isBusyRetryProcessorRunning) {
+    return;
+  }
+  isBusyRetryProcessorRunning = true;
+  try {
+    while (true) {
+      const store = readFaxRetryQueueStore();
+      const nowMs = Date.now();
+      const nextJob = Object.values(store.items || {})
+        .filter((item) => item.status === "pending")
+        .filter((item) => new Date(item.next_attempt_at || 0).getTime() <= nowMs)
+        .sort((a, b) => new Date(a.next_attempt_at || 0).getTime() - new Date(b.next_attempt_at || 0).getTime())[0];
+
+      if (!nextJob) {
+        break;
+      }
+
+      const tenantId = normalizeTenantId(nextJob.tenant_id);
+      const cfg = getRuntimeConfig(tenantId);
+      const retriesAttempted = Number(nextJob.retries_attempted || 0);
+      const maxRetries = Number(nextJob.max_retries || BUSY_RETRY_MAX_ATTEMPTS);
+      if (!cfg.telnyx_api_key || !cfg.telnyx_connection_id || !cfg.telnyx_from_number) {
+        await markRetryJobFinalFailureAndAlert(nextJob, {
+          tenantId,
+          failureReason: "missing_telnyx_settings",
+          fax: {
+            id: nextJob.current_fax_id || nextJob.root_fax_id,
+            from: nextJob.from || cfg.telnyx_from_number || "",
+            to: nextJob.to || "",
+            status: "failed"
+          }
+        });
+        continue;
+      }
+
+      if (retriesAttempted >= maxRetries) {
+        await markRetryJobFinalFailureAndAlert(nextJob, {
+          tenantId,
+          failureReason: nextJob.last_failure_reason || "receiver_calling_the_number_is_busy"
+        });
+        continue;
+      }
+
+      const to = normalizeE164(nextJob.to || "");
+      const mediaUrls = Array.isArray(nextJob.media_urls) ? nextJob.media_urls.filter(Boolean) : [];
+      if (!isE164(to) || !mediaUrls.length) {
+        await markRetryJobFinalFailureAndAlert(nextJob, {
+          tenantId,
+          failureReason: "retry_payload_invalid",
+          fax: {
+            id: nextJob.current_fax_id || nextJob.root_fax_id,
+            from: cfg.telnyx_from_number,
+            to: nextJob.to || "",
+            status: "failed"
+          }
+        });
+        continue;
+      }
+
+      try {
+        const retryFax = await telnyxSendFax({
+          apiKey: cfg.telnyx_api_key,
+          connectionId: cfg.telnyx_connection_id,
+          from: cfg.telnyx_from_number,
+          to,
+          mediaUrls
+        });
+
+        upsertFax(retryFax.id, {
+          id: retryFax.id,
+          direction: retryFax.direction,
+          status: retryFax.status,
+          from: retryFax.from,
+          to: retryFax.to,
+          media_url: Array.isArray(retryFax.media_url) ? retryFax.media_url.join("\n") : retryFax.media_url,
+          media_urls: mediaUrls,
+          failure_reason: null,
+          telnyx_updated_at: retryFax.updated_at,
+          created_at: retryFax.created_at,
+          requested_by: nextJob.requested_by || "",
+          retry_of: nextJob.root_fax_id || "",
+          retry_attempt: retriesAttempted + 1,
+          retry_job_id: nextJob.id
+        }, tenantId);
+        appendEvent(retryFax.id, "fax.retry.queued", retryFax, tenantId);
+
+        updateRetryJob(nextJob.id, (job) => ({
+          ...job,
+          status: "waiting_webhook",
+          current_fax_id: retryFax.id,
+          retries_attempted: retriesAttempted + 1,
+          last_attempt_at: new Date().toISOString(),
+          next_attempt_at: null,
+          history: [
+            ...(Array.isArray(job.history) ? job.history : []),
+            {
+              at: new Date().toISOString(),
+              event: "retry_queued",
+              fax_id: retryFax.id,
+              retry_attempt: retriesAttempted + 1
+            }
+          ]
+        }), tenantId);
+      } catch (error) {
+        const nextAttempt = retriesAttempted + 1;
+        if (nextAttempt >= maxRetries) {
+          await markRetryJobFinalFailureAndAlert(nextJob, {
+            tenantId,
+            failureReason: error.message || "retry_send_failed",
+            fax: {
+              id: nextJob.current_fax_id || nextJob.root_fax_id,
+              from: cfg.telnyx_from_number,
+              to: nextJob.to || "",
+              status: "failed"
+            }
+          });
+        } else {
+          updateRetryJob(nextJob.id, (job) => ({
+            ...job,
+            status: "pending",
+            retries_attempted: nextAttempt,
+            next_attempt_at: new Date(Date.now() + BUSY_RETRY_INTERVAL_MS).toISOString(),
+            last_failure_reason: error.message || "retry_send_failed",
+            history: [
+              ...(Array.isArray(job.history) ? job.history : []),
+              {
+                at: new Date().toISOString(),
+                event: "retry_send_error",
+                fax_id: nextJob.current_fax_id || "",
+                retry_attempt: nextAttempt,
+                error: error.message || "retry_send_failed"
+              }
+            ]
+          }), tenantId);
+        }
+      }
+    }
+  } finally {
+    isBusyRetryProcessorRunning = false;
+  }
+}
+
 function upsertFax(faxId, patch, tenantId = DEFAULT_TENANT_ID) {
   const normalizedTenantId = normalizeTenantId(tenantId);
   const store = readStore();
@@ -2984,6 +3451,19 @@ function getFaxTenantId(faxId, fallbackTenantId = DEFAULT_TENANT_ID) {
     return normalizeTenantId(archive.items[faxId].tenant_id);
   }
   return normalizeTenantId(fallbackTenantId);
+}
+
+function getFaxById(faxId) {
+  if (!faxId) return null;
+  const store = readStore();
+  if (store.items?.[faxId]) {
+    return store.items[faxId];
+  }
+  const archive = readArchiveStore();
+  if (archive.items?.[faxId]) {
+    return archive.items[faxId];
+  }
+  return null;
 }
 
 function appendEvent(faxId, eventType, payload, tenantId = DEFAULT_TENANT_ID) {
@@ -3088,6 +3568,7 @@ function getRuntimeConfig(tenantId = DEFAULT_TENANT_ID) {
     smtp_user: process.env.SMTP_USER || "",
     smtp_pass: process.env.SMTP_PASS || "",
     smtp_from: process.env.SMTP_FROM || process.env.SMTP_USER || "",
+    fax_failure_alert_email: FAX_FAILURE_ALERT_EMAIL || cfg.outbound_copy_email || "",
     tenant_id: normalizeTenantId(tenantId)
   };
 }
@@ -3349,6 +3830,68 @@ async function sendOutboundCopyEmail({
   };
 
   await transporter.sendMail(mail);
+  return { sent: true, reason: "ok" };
+}
+
+async function sendFaxFailureAlertEmail({
+  cfg,
+  fax,
+  failureReason,
+  retriesAttempted = 0,
+  maxRetries = BUSY_RETRY_MAX_ATTEMPTS,
+  retryEnabled = BUSY_RETRY_ENABLED,
+  retryJobId = "",
+  tenantId = DEFAULT_TENANT_ID
+}) {
+  const recipient = (cfg.fax_failure_alert_email || cfg.outbound_copy_email || "").trim();
+  if (!recipient || !isEmail(recipient)) {
+    return { sent: false, reason: "invalid_recipient" };
+  }
+  if (!cfg.smtp_host || !cfg.smtp_user || !cfg.smtp_pass || !cfg.smtp_from) {
+    return { sent: false, reason: "smtp_not_configured" };
+  }
+
+  const failure = classifyFaxFailureReason(failureReason);
+  const transporter = nodemailer.createTransport({
+    host: cfg.smtp_host,
+    port: cfg.smtp_port,
+    secure: cfg.smtp_secure,
+    auth: {
+      user: cfg.smtp_user,
+      pass: cfg.smtp_pass
+    }
+  });
+
+  const subject = `Fax failed: ${fax?.to || "unknown"} (${failure.category})`;
+  const lines = [
+    "Fax delivery failed after retry policy handling.",
+    "",
+    "Human-readable summary:",
+    `- ${failure.user_message}`,
+    "",
+    "Support details:",
+    `- Failure code: ${failure.code || "unknown"}`,
+    `- Category: ${failure.category}`,
+    `- Hint: ${failure.support_hint}`,
+    "",
+    "Fax context:",
+    `- Tenant: ${tenantId}`,
+    `- Fax ID: ${fax?.id || "unknown"}`,
+    `- From: ${fax?.from || "unknown"}`,
+    `- To: ${fax?.to || "unknown"}`,
+    `- Status: ${fax?.status || "failed"}`,
+    `- Retry enabled: ${retryEnabled ? "yes" : "no"}`,
+    `- Retries attempted: ${retriesAttempted}/${maxRetries}`,
+    retryJobId ? `- Retry job ID: ${retryJobId}` : null,
+    `- Timestamp: ${new Date().toISOString()}`
+  ].filter(Boolean);
+
+  await transporter.sendMail({
+    from: cfg.smtp_from,
+    to: recipient,
+    subject,
+    text: lines.join("\n")
+  });
   return { sent: true, reason: "ok" };
 }
 
@@ -4115,7 +4658,8 @@ app.post("/api/faxes", async (req, res) => {
           cover_message: coverMessage || "",
           failure_reason: null,
           telnyx_updated_at: fax.updated_at,
-          created_at: fax.created_at
+          created_at: fax.created_at,
+          requested_by: requestedBy
         }, tenantId);
         appendEvent(fax.id, "fax.queued", fax, tenantId);
 
@@ -4986,7 +5530,8 @@ app.patch("/api/admin/telnyx/fax-application", requireAdmin, async (req, res) =>
 });
 
 app.post(["/api/webhooks/telnyx", "/telnyx/webhook"], (req, res) => {
-  try {
+  Promise.resolve()
+    .then(async () => {
     const fallbackTenantId = DEFAULT_TENANT_ID;
     const signature = verifyTelnyxWebhookSignature(req);
     if (!signature.valid) {
@@ -4995,12 +5540,98 @@ app.post(["/api/webhooks/telnyx", "/telnyx/webhook"], (req, res) => {
     const parsed = parseWebhook(req.body);
     if (parsed.faxId) {
       const tenantId = getFaxTenantId(parsed.faxId, fallbackTenantId);
+      const existingFax = getFaxById(parsed.faxId) || {};
+      const failure = classifyFaxFailureReason(parsed.failureReason);
+      const mergedFax = {
+        ...existingFax,
+        id: parsed.faxId,
+        from: existingFax.from || parsed.payload?.from || "",
+        to: existingFax.to || parsed.payload?.to || "",
+        status: parsed.status || existingFax.status || "unknown",
+        direction: existingFax.direction || parsed.payload?.direction || ""
+      };
       upsertFax(parsed.faxId, {
         id: parsed.faxId,
         status: parsed.status,
-        failure_reason: parsed.failureReason
+        failure_reason: parsed.failureReason,
+        failure_category: failure.category,
+        failure_user_message: failure.user_message,
+        failure_support_hint: failure.support_hint
       }, tenantId);
       appendEvent(parsed.faxId, parsed.eventType, parsed.payload, tenantId);
+
+      const retryJob = getRetryJobByFaxId(parsed.faxId, tenantId);
+      const isOutbound = (mergedFax.direction || "").toString().toLowerCase() !== "inbound";
+      if (isOutbound && parsed.status === "delivered" && retryJob) {
+        updateRetryJob(retryJob.id, (job) => ({
+          ...job,
+          status: "completed",
+          completed_at: new Date().toISOString(),
+          next_attempt_at: null,
+          history: [
+            ...(Array.isArray(job.history) ? job.history : []),
+            {
+              at: new Date().toISOString(),
+              event: "delivered",
+              fax_id: parsed.faxId
+            }
+          ]
+        }), tenantId);
+      }
+
+      if (isOutbound && parsed.status === "failed") {
+        const retryCandidateFax = {
+          ...mergedFax,
+          media_urls: Array.isArray(existingFax.media_urls)
+            ? existingFax.media_urls
+            : retryJob?.media_urls || []
+        };
+        const shouldRetryBusy = isBusyFailureReason(parsed.failureReason);
+        let retryScheduled = null;
+        if (shouldRetryBusy) {
+          retryScheduled = scheduleBusyRetryFromFailure({
+            fax: retryCandidateFax,
+            tenantId,
+            failureReason: parsed.failureReason,
+            reasonClass: failure
+          });
+          if (retryScheduled) {
+            appendEvent(parsed.faxId, "fax.retry.scheduled", {
+              retry_job_id: retryScheduled.id,
+              retries_attempted: retryScheduled.retries_attempted,
+              max_retries: retryScheduled.max_retries,
+              next_attempt_at: retryScheduled.next_attempt_at
+            }, tenantId);
+          }
+        }
+
+        if (!retryScheduled) {
+          if (retryJob) {
+            await markRetryJobFinalFailureAndAlert(retryJob, {
+              tenantId,
+              failureReason: parsed.failureReason,
+              fax: retryCandidateFax
+            });
+          } else if (!existingFax.failure_alert_sent) {
+            const cfg = getRuntimeConfig(tenantId);
+            const alertResult = await sendFaxFailureAlertEmail({
+              cfg,
+              fax: retryCandidateFax,
+              failureReason: parsed.failureReason,
+              retriesAttempted: 0,
+              maxRetries: BUSY_RETRY_MAX_ATTEMPTS,
+              retryEnabled: BUSY_RETRY_ENABLED,
+              retryJobId: "",
+              tenantId
+            }).catch((error) => ({ sent: false, reason: error.message || "alert_send_failed" }));
+            upsertFax(parsed.faxId, {
+              id: parsed.faxId,
+              failure_alert_sent: alertResult.sent === true,
+              failure_alert_reason: alertResult.reason || ""
+            }, tenantId);
+          }
+        }
+      }
       appendAuditEvent({
         tenantId,
         actorUsername: "telnyx-webhook",
@@ -5009,13 +5640,17 @@ app.post(["/api/webhooks/telnyx", "/telnyx/webhook"], (req, res) => {
         targetType: "fax",
         targetId: parsed.faxId,
         ipAddress: getAuthClientIp(req),
-        metadata: { event_type: parsed.eventType, status: parsed.status }
+        metadata: {
+          event_type: parsed.eventType,
+          status: parsed.status,
+          failure_reason: parsed.failureReason || "",
+          failure_category: failure.category
+        }
       });
     }
     return res.status(200).json({ ok: true });
-  } catch (error) {
-    return res.status(200).json({ ok: true });
-  }
+    })
+    .catch(() => res.status(200).json({ ok: true }));
 });
 
 app.get("/media/:filename", (req, res) => {
@@ -5049,6 +5684,13 @@ function startBackgroundWorkers() {
       });
     }, BULK_WORKER_POLL_MS);
   }
+  if (!busyRetryInterval) {
+    busyRetryInterval = setInterval(() => {
+      processBusyRetryQueue().catch((error) => {
+        console.warn(`Busy retry worker cycle failed: ${error.message || error}`);
+      });
+    }, BUSY_RETRY_POLL_MS);
+  }
 
   if (!uploadCleanupInterval) {
     uploadCleanupInterval = setInterval(() => {
@@ -5058,6 +5700,7 @@ function startBackgroundWorkers() {
 
   setTimeout(() => {
     processQueuedBulkJobs().catch(() => {});
+    processBusyRetryQueue().catch(() => {});
     cleanExpiredUploads();
   }, 1000);
 }

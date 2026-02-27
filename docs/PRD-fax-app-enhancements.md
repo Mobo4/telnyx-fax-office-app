@@ -56,7 +56,7 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Recipient input accepts:
   - 10-digit US (`7145580642`) -> normalized to E.164 `+17145580642`.
   - 11-digit US starting with `1` -> normalized to E.164.
-  - Direct E.164 (`+17145551234`).
+  - Direct E.164 (`+17145551234`, international supported).
 - Recipient display format:
   - US numbers shown as `714-558-0642` in field and chips.
 - Recipient UX:
@@ -83,6 +83,9 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
   - count of records present in local Sent History table
 - Keep standard inline status message as secondary feedback.
 - On confirmation modal `OK`, reset compose form for next fax job.
+- Busy retry policy:
+  - If provider failure reason is busy, retry automatically up to 3 times at 10-minute intervals (configurable).
+  - If retries exhausted or non-busy terminal failure occurs, send owner alert email with user-friendly and support diagnostics.
 
 ### Fax History
 - Sent/Received tabs remain.

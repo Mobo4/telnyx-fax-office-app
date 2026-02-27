@@ -5,6 +5,8 @@ Browser-based fax app for office use. It includes:
 - Send fax from a simple web form
 - Delivery verification (`delivered` / `failed`)
 - Failure reason tracking
+- Busy-line retry policy (up to 3 retries, 10-minute interval by default)
+- Terminal failure alert email with human-readable + support diagnostics
 - Webhook receiver for Telnyx fax events
 - Manual fallback polling for any fax ID
 - Login with role-based access (`admin` and `user`)
@@ -58,6 +60,12 @@ Set:
 - Optional: `DATA_DIR` (path for persistent JSON data)
 - Optional: `TELNYX_HTTP_TIMEOUT_MS` (default `5000`)
 - Optional: `LOCAL_SESSION_STORE_ENABLED` (default `true`; uses `DATA_DIR/sessions_local.json` when D1 is not enabled)
+- Fax retry/failure alerts:
+  - `BUSY_RETRY_ENABLED` (default `true`)
+  - `BUSY_RETRY_MAX_ATTEMPTS` (default `3`)
+  - `BUSY_RETRY_INTERVAL_MS` (default `600000`)
+  - `BUSY_RETRY_POLL_MS` (default `30000`)
+  - `FAX_FAILURE_ALERT_EMAIL` (optional; falls back to `OUTBOUND_COPY_EMAIL`)
 - Optional Google auth:
   - `GOOGLE_AUTH_ENABLED=true`
   - `GOOGLE_CLIENT_ID`
@@ -159,6 +167,10 @@ Webhook hardening:
    - `delivered` = success
    - `failed` = denied/failed (with reason)
 4. "Poll" button calls `GET /v2/faxes/{fax_id}` via backend fallback
+5. If failure reason indicates busy line, app retries automatically (default: 3x every 10 min)
+6. If still failed, app sends owner alert email with:
+   - human summary
+   - support-oriented failure details/code
 
 ## 6.1 Outbound copy email
 

@@ -1,5 +1,31 @@
 # Change Log
 
+## 2026-02-27 (busy retry + failure alert wave)
+### Completed
+- Added webhook-driven failure reason classification for outbound fax failures:
+  - busy
+  - no_answer
+  - invalid_number
+  - rejected
+  - unreachable
+  - account_or_limits
+  - signaling_or_media
+  - canceled
+- Added busy-line auto-redial workflow:
+  - retries queued in `data/fax_retry_queue.json`
+  - default policy: 3 retries at 10-minute intervals (configurable via env)
+- Added busy retry worker loop with safe terminal handling.
+- Added terminal failure alert email with:
+  - human-readable explanation
+  - support troubleshooting details and raw failure code/category
+- Added new environment controls:
+  - `BUSY_RETRY_ENABLED`
+  - `BUSY_RETRY_MAX_ATTEMPTS`
+  - `BUSY_RETRY_INTERVAL_MS`
+  - `BUSY_RETRY_POLL_MS`
+  - `FAX_FAILURE_ALERT_EMAIL`
+- Updated send-form validation message to explicitly include international E.164 input examples.
+
 ## 2026-02-27 (google account-linking wave)
 ### Completed
 - Added authenticated Google account linking endpoint:

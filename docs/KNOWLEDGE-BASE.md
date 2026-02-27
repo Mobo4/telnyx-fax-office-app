@@ -37,6 +37,7 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - Login throttling and account lockout after repeated failures.
 - Signed expiring media links for outbound fax document retrieval.
 - Background worker loop for queued bulk fax recovery.
+- Background worker loop for busy-line fax retries (`fax_retry_queue.json`).
 - Optional webhook signature verification for Telnyx events.
 - v2 commercial branch adds tenant-aware request scoping (`X-Tenant-Id`), immutable audit logs, billing/plan admin APIs, and idempotent outbound send.
 - v2 now requires explicit tenant provisioning; unknown tenant IDs are rejected instead of auto-created.
@@ -49,6 +50,7 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - Uploads: `/api/uploads/batch`
 - Contacts: `/api/contacts`, `/api/contacts/import`, `/api/contacts/tags`, `/api/contacts/frequent`
 - Bulk: `/api/faxes/bulk`, `/api/faxes/bulk-jobs`
+- Retry internals: busy retry queue worker (server-side only, webhook-driven)
 - Admin: `/api/admin/settings`, `/api/admin/telnyx/fax-application`, `/api/admin/users`
 - Archive: `/api/faxes/archive` (admin-only)
 - Health: `/api/health` (includes hosting/storage diagnostics)
@@ -95,12 +97,16 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - `/api/faxes` now includes `sync_warning` when Telnyx sync fails, while still returning local/archived history.
 - Login attempts are throttled by IP and temporarily lock per username after repeated failures.
 - Webhook route can enforce signature verification via Telnyx public key.
+- Webhook failure reasons are classified into categories (busy/no_answer/invalid_number/etc.) for operator diagnostics.
+- Busy failures are automatically retried using queue policy (`BUSY_RETRY_*` env vars).
+- Terminal failures trigger SMTP alert to `FAX_FAILURE_ALERT_EMAIL` (or fallback outbound copy email).
 
 ## Data Files
 - `/Users/alex/Documents/Projects/Telnyx/data/faxes.json`
 - `/Users/alex/Documents/Projects/Telnyx/data/faxes_archive.json`
 - `/Users/alex/Documents/Projects/Telnyx/data/contacts.json`
 - `/Users/alex/Documents/Projects/Telnyx/data/bulk_jobs.json`
+- `/Users/alex/Documents/Projects/Telnyx/data/fax_retry_queue.json`
 - `/Users/alex/Documents/Projects/Telnyx/data/config.json`
 - `/Users/alex/Documents/Projects/Telnyx/data/users.json`
 
