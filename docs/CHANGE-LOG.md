@@ -1,5 +1,16 @@
 # Change Log
 
+## 2026-02-27 (stabilization verification wave)
+### Completed
+- Ran local and live smoke validation for:
+  - route split (`/` marketing, `/app` workspace)
+  - public signup endpoint
+  - role enforcement (`user` denied on admin settings API)
+- Confirmed paid-mode signup behavior on Render:
+  - newly signed up tenants are intentionally suspended until Stripe webhook activation.
+- Confirmed login page renders without pre-login upload popup.
+- Confirmed no known npm production dependency vulnerabilities (`npm audit --omit=dev` clean).
+
 ## 2026-02-27 (public marketing + self-signup wave)
 ### Completed
 - Added route split:

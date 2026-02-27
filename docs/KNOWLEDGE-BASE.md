@@ -192,6 +192,10 @@ Operational reference for architecture, workflow behavior, limits, and known edg
   - `STRIPE_SECRET_KEY`
   - `STRIPE_WEBHOOK_SECRET`
   - `STRIPE_PRICE_STARTER_MONTHLY` (and optional `PRO` / `ENTERPRISE`)
+- Public signup behavior in paid mode:
+  - `/api/public/signup` creates tenant + admin, then returns Stripe Checkout URL.
+  - tenant is created with `active=false` until Stripe webhook confirms subscription lifecycle.
+  - login before activation returns `Tenant is suspended.`
 - Cancellation path:
   - admin opens Stripe portal via `POST /api/admin/billing/portal-session`
   - tenant billing status syncs back via `/api/webhooks/stripe` subscription events.

@@ -57,6 +57,8 @@
 - [x] Add manual retry action in Sent History for failed outbound faxes (working `Retry` button + backend resend API).
 - [x] Add Stripe subscription flow (admin checkout session + Stripe customer portal cancel/manage + webhook sync).
 - [x] Add public marketing + signup flow (`/` marketing site, `/app` workspace, `/api/public/signup` + Stripe checkout redirect).
+- [x] Run end-to-end stabilization smoke tests (local + Render) for signup/login/role guard and route split.
+- [x] Validate paid signup activation gate (pre-payment login blocked until Stripe webhook activation).
 
 ## Next Tasks
 - [ ] Execute commercial SaaS program in `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-commercial-saas-hipaa.md`.

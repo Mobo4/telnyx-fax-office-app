@@ -55,6 +55,7 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Public signup flow:
   - `POST /api/public/signup` creates a new tenant and first admin user.
   - In paid mode, signup should return Stripe checkout URL for plan activation.
+  - In paid mode, tenant login remains blocked (`Tenant is suspended.`) until Stripe webhook marks billing active.
 
 ### Send Fax Workflow
 - Recipient input accepts:
