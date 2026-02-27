@@ -6,6 +6,7 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 ## Related Planning Docs
 - `/Users/alex/Documents/Projects/Telnyx/docs/PRD-fax-app-enhancements.md`
 - `/Users/alex/Documents/Projects/Telnyx/docs/PRD-google-authentication.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/PRD-email-fax-gateway.md`
 - `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST.md`
 - `/Users/alex/Documents/Projects/Telnyx/docs/PRD-security-hardening-wave1.md`
 - `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-security-hardening-wave1.md`
@@ -35,6 +36,8 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - Post-send form reset after confirmation modal OK.
 - Admin settings hard-gated to admin role in UI and API (`403` on admin routes for non-admin).
 - Admin billing controls for Stripe checkout and Stripe customer portal (cancel/manage).
+- Provider-side inbound fax email recipient supported through Telnyx fax app configuration.
+- Full email-to-fax gateway is planned (see `PRD-email-fax-gateway.md`).
 - Login throttling and account lockout after repeated failures.
 - Signed expiring media links for outbound fax document retrieval.
 - Background worker loop for queued bulk fax recovery.

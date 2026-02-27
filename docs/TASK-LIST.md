@@ -65,6 +65,9 @@
 
 ## Next Tasks
 - [ ] Execute commercial SaaS program in `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-commercial-saas-hipaa.md`.
+- [ ] Implement Phase A/B of `/Users/alex/Documents/Projects/Telnyx/docs/PRD-email-fax-gateway.md` (provider webhook, signature verify, parser, attachment intake, queue integration).
+- [ ] Build admin Email Gateway settings + request history UI per `/Users/alex/Documents/Projects/Telnyx/docs/PRD-email-fax-gateway.md`.
+- [ ] Add idempotency by provider message-id and replay-safe controls for email-to-fax webhooks.
 - [ ] Add automated tests for `/api/faxes` multi-recipient success/failure mixes.
 - [ ] Add tests for contact cap during CSV import.
 - [ ] Add localhost runtime banner explaining Telnyx public-HTTPS media requirement.

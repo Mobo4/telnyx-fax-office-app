@@ -1,5 +1,17 @@
 # Change Log
 
+## 2026-02-27 (email gateway PRD wave)
+### Completed
+- Added dedicated planning document:
+  - `/Users/alex/Documents/Projects/Telnyx/docs/PRD-email-fax-gateway.md`
+- Defined product and technical design for:
+  - fax-to-email hardening and notifications
+  - email-to-fax gateway ingestion, parsing, allowlist controls, and auditability
+- Added implementation tasks for phased delivery to ongoing task list.
+- Updated knowledge base to reflect current state:
+  - inbound fax email exists via Telnyx setting
+  - full email-to-fax remains planned.
+
 ## 2026-02-27 (pricing incentives + admin usage dashboard wave)
 ### Completed
 - Updated public pricing model to create clear upgrade incentives:
