@@ -356,6 +356,49 @@ function normalizeTenantId(value) {
   return tenant;
 }
 
+function slugifyTenantCandidate(value) {
+  return (value || "")
+    .toString()
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 56);
+}
+
+function buildSignupTenantId({
+  requestedTenantId = "",
+  companyName = "",
+  email = ""
+}) {
+  const requested = normalizeTenantId(requestedTenantId);
+  if (requested && requested !== DEFAULT_TENANT_ID && !getTenantById(requested)) {
+    return requested;
+  }
+
+  const emailLocal = ((email || "").toString().trim().toLowerCase().split("@")[0] || "").slice(0, 40);
+  const base =
+    slugifyTenantCandidate(companyName) ||
+    slugifyTenantCandidate(emailLocal) ||
+    `tenant-${Date.now().toString().slice(-6)}`;
+  let candidate = normalizeTenantId(base);
+  if (!candidate || candidate === DEFAULT_TENANT_ID) {
+    candidate = `tenant-${Math.random().toString(36).slice(2, 8)}`;
+  }
+  if (!getTenantById(candidate) && candidate !== DEFAULT_TENANT_ID) {
+    return candidate;
+  }
+  for (let i = 0; i < 1000; i += 1) {
+    const suffix = Math.random().toString(36).slice(2, 6);
+    const alt = normalizeTenantId(`${base.slice(0, 56)}-${suffix}`.slice(0, 64));
+    if (alt && alt !== DEFAULT_TENANT_ID && !getTenantById(alt)) {
+      return alt;
+    }
+  }
+  throw new Error("Could not allocate a tenant ID. Please try again.");
+}
+
 function normalizeAuthProvider(value) {
   return (value || "").toString().trim().toLowerCase() === "google" ? "google" : "local";
 }
@@ -420,7 +463,7 @@ function buildAuthRedirectUrl({ tenantId = DEFAULT_TENANT_ID, error = "", source
     params.set("auth_source", (source || "").toString().slice(0, 40));
   }
   const query = params.toString();
-  return query ? `/?${query}` : "/";
+  return query ? `/app?${query}` : "/app";
 }
 
 function redirectToLoginWithAuthError(res, { tenantId, message } = {}) {
@@ -1197,10 +1240,11 @@ function applyTenantBillingPatch(tenantId, patch = {}, { allowFreeMode = false }
   writeBillingStore(billingStore);
 
   const tenants = readTenantsStore();
+  const isTenantActiveForStatus = ["active", "trialing", "past_due"].includes(next.status);
   tenants.items[normalizedTenantId] = {
     ...tenant,
     plan: next.plan,
-    active: !["suspended", "canceled"].includes(next.status),
+    active: isTenantActiveForStatus,
     updated_at: new Date().toISOString()
   };
   writeTenantsStore(tenants);
@@ -2422,11 +2466,8 @@ async function ensureD1UsersTable() {
 
 async function getUserByUsernameStore(username, tenantId = DEFAULT_TENANT_ID) {
   const normalizedTenantId = normalizeTenantId(tenantId);
-  if (!D1_USERS_ENABLED) {
+  if (!D1_USERS_ENABLED || normalizedTenantId !== DEFAULT_TENANT_ID) {
     return getUserByUsername(username, normalizedTenantId);
-  }
-  if (normalizedTenantId !== DEFAULT_TENANT_ID) {
-    throw new Error("Tenant-scoped users with D1 are not enabled for this build.");
   }
   const rows = await d1Query("SELECT * FROM users WHERE username = ? LIMIT 1", [
     normalizeUsername(username)
@@ -2441,11 +2482,8 @@ async function getUserByUsernameStore(username, tenantId = DEFAULT_TENANT_ID) {
 
 async function listUsersSafeStore(tenantId = DEFAULT_TENANT_ID) {
   const normalizedTenantId = normalizeTenantId(tenantId);
-  if (!D1_USERS_ENABLED) {
+  if (!D1_USERS_ENABLED || normalizedTenantId !== DEFAULT_TENANT_ID) {
     return listUsersSafe(normalizedTenantId);
-  }
-  if (normalizedTenantId !== DEFAULT_TENANT_ID) {
-    throw new Error("Tenant-scoped users with D1 are not enabled for this build.");
   }
   const rows = await d1Query(
     "SELECT id, username, role, auth_provider, email, google_sub, last_media_url, created_at, updated_at FROM users ORDER BY created_at DESC"
@@ -2455,11 +2493,8 @@ async function listUsersSafeStore(tenantId = DEFAULT_TENANT_ID) {
 
 async function createUserStore({ username, password, role, tenantId = DEFAULT_TENANT_ID }) {
   const normalizedTenantId = normalizeTenantId(tenantId);
-  if (!D1_USERS_ENABLED) {
+  if (!D1_USERS_ENABLED || normalizedTenantId !== DEFAULT_TENANT_ID) {
     return createUser({ username, password, role, tenantId: normalizedTenantId });
-  }
-  if (normalizedTenantId !== DEFAULT_TENANT_ID) {
-    throw new Error("Tenant-scoped users with D1 are not enabled for this build.");
   }
   const normalizedUsername = normalizeUsername(username);
   if (!/^[a-z0-9._-]{3,64}$/.test(normalizedUsername)) {
@@ -2526,7 +2561,7 @@ async function createSsoUserStore({
   tenantId = DEFAULT_TENANT_ID
 }) {
   const normalizedTenantId = normalizeTenantId(tenantId);
-  if (!D1_USERS_ENABLED) {
+  if (!D1_USERS_ENABLED || normalizedTenantId !== DEFAULT_TENANT_ID) {
     return createSsoUser({
       username,
       role,
@@ -2535,9 +2570,6 @@ async function createSsoUserStore({
       googleSub,
       tenantId: normalizedTenantId
     });
-  }
-  if (normalizedTenantId !== DEFAULT_TENANT_ID) {
-    throw new Error("Tenant-scoped users with D1 are not enabled for this build.");
   }
 
   const normalizedUsername = normalizeUsername(username);
@@ -2603,16 +2635,13 @@ async function getGoogleUserByIdentityStore({
   const normalizedEmail = (email || "").toString().trim().toLowerCase();
   const normalizedSub = (sub || "").toString().trim();
   const normalizedUsername = normalizeUsername(username);
-  if (!D1_USERS_ENABLED) {
+  if (!D1_USERS_ENABLED || normalizedTenantId !== DEFAULT_TENANT_ID) {
     return getGoogleUserByIdentity({
       email: normalizedEmail,
       sub: normalizedSub,
       username: normalizedUsername,
       tenantId: normalizedTenantId
     });
-  }
-  if (normalizedTenantId !== DEFAULT_TENANT_ID) {
-    throw new Error("Tenant-scoped users with D1 are not enabled for this build.");
   }
   if (!normalizedEmail && !normalizedSub && !normalizedUsername) {
     return null;
@@ -2645,16 +2674,13 @@ async function syncGoogleUserIdentityStore({
   tenantId = DEFAULT_TENANT_ID
 }) {
   const normalizedTenantId = normalizeTenantId(tenantId);
-  if (!D1_USERS_ENABLED) {
+  if (!D1_USERS_ENABLED || normalizedTenantId !== DEFAULT_TENANT_ID) {
     return syncGoogleUserIdentity({
       username,
       email,
       sub,
       tenantId: normalizedTenantId
     });
-  }
-  if (normalizedTenantId !== DEFAULT_TENANT_ID) {
-    throw new Error("Tenant-scoped users with D1 are not enabled for this build.");
   }
   const normalizedUsername = normalizeUsername(username);
   const existingRows = await d1Query("SELECT * FROM users WHERE username = ? LIMIT 1", [normalizedUsername]);
@@ -2712,11 +2738,8 @@ async function createGoogleUserWithUniqueUsernameStore({
 
 async function updateUserPasswordStore({ username, password, tenantId = DEFAULT_TENANT_ID }) {
   const normalizedTenantId = normalizeTenantId(tenantId);
-  if (!D1_USERS_ENABLED) {
+  if (!D1_USERS_ENABLED || normalizedTenantId !== DEFAULT_TENANT_ID) {
     return updateUserPassword({ username, password, tenantId: normalizedTenantId });
-  }
-  if (normalizedTenantId !== DEFAULT_TENANT_ID) {
-    throw new Error("Tenant-scoped users with D1 are not enabled for this build.");
   }
   if (!password || password.length < 10) {
     throw new Error("Password must be at least 10 characters.");
@@ -2749,11 +2772,8 @@ async function updateUserPasswordStore({ username, password, tenantId = DEFAULT_
 
 async function updateUserLastMediaUrlStore({ username, mediaUrl, tenantId = DEFAULT_TENANT_ID }) {
   const normalizedTenantId = normalizeTenantId(tenantId);
-  if (!D1_USERS_ENABLED) {
+  if (!D1_USERS_ENABLED || normalizedTenantId !== DEFAULT_TENANT_ID) {
     return updateUserLastMediaUrl({ username, mediaUrl, tenantId: normalizedTenantId });
-  }
-  if (normalizedTenantId !== DEFAULT_TENANT_ID) {
-    throw new Error("Tenant-scoped users with D1 are not enabled for this build.");
   }
   const normalizedUsername = normalizeUsername(username);
   const existingRows = await d1Query("SELECT * FROM users WHERE username = ? LIMIT 1", [normalizedUsername]);
@@ -2778,11 +2798,8 @@ async function updateUserLastMediaUrlStore({ username, mediaUrl, tenantId = DEFA
 
 async function updateUserMfaStore({ username, enabled, tenantId = DEFAULT_TENANT_ID }) {
   const normalizedTenantId = normalizeTenantId(tenantId);
-  if (!D1_USERS_ENABLED) {
+  if (!D1_USERS_ENABLED || normalizedTenantId !== DEFAULT_TENANT_ID) {
     return updateUserMfa({ username, enabled, tenantId: normalizedTenantId });
-  }
-  if (normalizedTenantId !== DEFAULT_TENANT_ID) {
-    throw new Error("Tenant-scoped users with D1 are not enabled for this build.");
   }
   throw new Error("MFA settings in D1 user mode are not available in this build.");
 }
@@ -4120,11 +4137,6 @@ function requireAdmin(req, res, next) {
 
 app.use((req, res, next) => {
   req.tenant_id = getTenantIdFromRequest(req);
-  if (D1_USERS_ENABLED && normalizeTenantId(req.tenant_id) !== DEFAULT_TENANT_ID) {
-    return res.status(503).json({
-      error: "Tenant-scoped auth with D1 is not enabled. Use local user store or default tenant."
-    });
-  }
   return next();
 });
 
@@ -4134,6 +4146,7 @@ app.use("/api", (req, res, next) => {
     "/auth/login",
     "/auth/logout",
     "/auth/me",
+    "/public/signup",
     "/auth/google/config",
     "/auth/google/start",
     "/auth/google/callback",
@@ -4153,6 +4166,172 @@ app.use("/api", (req, res, next) => {
     return res.status(403).json({ error: "Tenant mismatch." });
   }
   return next();
+});
+
+app.post("/api/public/signup", async (req, res) => {
+  try {
+    const companyName = (req.body.company_name || req.body.office_name || "").toString().trim();
+    const adminEmail = (req.body.email || "").toString().trim().toLowerCase();
+    const username = normalizeUsername(req.body.username || "");
+    const password = (req.body.password || "").toString();
+    const requestedPlan = normalizePlanName(req.body.plan || STRIPE_DEFAULT_PLAN, STRIPE_DEFAULT_PLAN);
+
+    if (!companyName || companyName.length < 2) {
+      return res.status(400).json({ error: "Company name is required." });
+    }
+    if (!isEmail(adminEmail)) {
+      return res.status(400).json({ error: "A valid admin email is required." });
+    }
+    if (!/^[a-z0-9._-]{3,64}$/.test(username)) {
+      return res.status(400).json({
+        error: "Username must be 3-64 chars and use letters, numbers, dot, underscore, or dash."
+      });
+    }
+    if (!password || password.length < 10) {
+      return res.status(400).json({ error: "Password must be at least 10 characters." });
+    }
+    if (BILLING_MODE === "paid" && requestedPlan === "free") {
+      return res.status(400).json({ error: "Free plan is not available in paid billing mode." });
+    }
+    if (BILLING_MODE === "paid" && STRIPE_ENABLED && !isStripeConfiguredForPlan(requestedPlan)) {
+      return res.status(400).json({ error: `Signup plan "${requestedPlan}" is not configured for Stripe.` });
+    }
+
+    const tenantId = buildSignupTenantId({
+      requestedTenantId: req.body.tenant_id || "",
+      companyName,
+      email: adminEmail
+    });
+    const requiresStripeCheckout = BILLING_MODE === "paid" && STRIPE_ENABLED;
+    let checkoutUrl = "";
+    let checkoutSessionId = "";
+    let checkoutCustomerId = "";
+    let checkoutSubscriptionId = "";
+
+    if (requiresStripeCheckout) {
+      const priceId = stripePriceIdForPlan(requestedPlan);
+      const successUrl = buildAbsoluteUrl(
+        req,
+        STRIPE_SUCCESS_URL,
+        `/app?tenant_id=${encodeURIComponent(tenantId)}&billing=success`
+      );
+      const cancelUrl = buildAbsoluteUrl(
+        req,
+        STRIPE_CANCEL_URL,
+        `/app?tenant_id=${encodeURIComponent(tenantId)}&billing=cancel`
+      );
+      const session = await stripeClient.checkout.sessions.create({
+        mode: "subscription",
+        success_url: successUrl,
+        cancel_url: cancelUrl,
+        customer_email: adminEmail,
+        client_reference_id: tenantId,
+        line_items: [{ price: priceId, quantity: 1 }],
+        allow_promotion_codes: true,
+        metadata: {
+          tenant_id: tenantId,
+          plan: requestedPlan,
+          created_via: "public_signup"
+        },
+        subscription_data: {
+          metadata: {
+            tenant_id: tenantId,
+            plan: requestedPlan,
+            created_via: "public_signup"
+          }
+        }
+      });
+      checkoutUrl = (session.url || "").toString();
+      checkoutSessionId = (session.id || "").toString();
+      checkoutCustomerId = session.customer ? session.customer.toString() : "";
+      checkoutSubscriptionId = session.subscription ? session.subscription.toString() : "";
+    }
+
+    let tenant = null;
+    let user = null;
+    try {
+      tenant = createTenantRecord({
+        tenantId,
+        name: companyName,
+        plan: BILLING_MODE === "paid" ? requestedPlan : "free",
+        active: !requiresStripeCheckout
+      });
+
+      user = await createUserStore({
+        username,
+        password,
+        role: "admin",
+        tenantId
+      });
+    } catch (createError) {
+      if (tenant) {
+        const tenantsStore = readTenantsStore();
+        delete tenantsStore.items[tenantId];
+        writeTenantsStore(tenantsStore);
+
+        const billingStore = readBillingStore();
+        if (billingStore.items && billingStore.items[tenantId]) {
+          delete billingStore.items[tenantId];
+          writeBillingStore(billingStore);
+        }
+      }
+      throw createError;
+    }
+
+    const cfg = readConfig(tenantId);
+    writeConfig(
+      {
+        ...cfg,
+        office_name: companyName,
+        office_email: adminEmail,
+        outbound_copy_email: adminEmail
+      },
+      tenantId
+    );
+
+    let publicMessage = "";
+    if (requiresStripeCheckout) {
+      applyTenantBillingPatch(tenantId, {
+        plan: requestedPlan,
+        status: "incomplete",
+        stripe_customer_id: checkoutCustomerId,
+        stripe_subscription_id: checkoutSubscriptionId,
+        stripe_checkout_session_id: checkoutSessionId
+      });
+      publicMessage = "Signup created. Complete payment in Stripe to activate your workspace login.";
+    } else {
+      publicMessage = "Signup created. You can sign in now.";
+    }
+
+    appendAuditEvent({
+      tenantId,
+      actorUsername: user.username,
+      actorRole: "admin",
+      action: "auth.public_signup.created",
+      targetType: "tenant",
+      targetId: tenant.id,
+      ipAddress: getAuthClientIp(req),
+      metadata: {
+        plan: tenant.plan,
+        email: adminEmail,
+        requires_payment: Boolean(checkoutUrl)
+      }
+    });
+
+    return res.status(201).json({
+      ok: true,
+      message: publicMessage,
+      tenant_id: tenantId,
+      username: user.username,
+      plan: tenant.plan,
+      requires_payment: Boolean(checkoutUrl),
+      checkout_url: checkoutUrl,
+      checkout_session_id: checkoutSessionId,
+      login_url: `/app?tenant_id=${encodeURIComponent(tenantId)}`
+    });
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Could not create account." });
+  }
 });
 
 app.post("/api/auth/login", async (req, res) => {
@@ -6235,6 +6414,15 @@ app.get("/media/:filename", (req, res) => {
   } catch (error) {
     return res.status(400).json({ error: "Could not access media file." });
   }
+});
+
+app.get("/app", (req, res) => {
+  res.sendFile(path.join(PUBLIC_DIR, "app.html"));
+});
+
+app.get("/signin", (req, res) => {
+  const query = req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
+  return res.redirect(`/app${query}`);
 });
 
 app.get("*", (req, res) => {

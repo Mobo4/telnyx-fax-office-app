@@ -29,6 +29,7 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 7. As staff, I can rely on always-on inbound handling and have inbound email as backup.
 8. As admin, I can access recent history quickly while retaining older records.
 9. As office staff, I can sign in with my own Google account under the same tenant account.
+10. As a new customer, I can land on a public marketing website, sign up, and be routed into checkout/login.
 
 ## Functional Requirements
 
@@ -51,6 +52,9 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
   - D1-backed where configured
   - local file store (`DATA_DIR/sessions_local.json`) when D1 is not configured
   - in-memory only if local session store is explicitly disabled
+- Public signup flow:
+  - `POST /api/public/signup` creates a new tenant and first admin user.
+  - In paid mode, signup should return Stripe checkout URL for plan activation.
 
 ### Send Fax Workflow
 - Recipient input accepts:
@@ -133,6 +137,9 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Alternative persistence path: Cloudflare D1 for users, settings, contacts, fax history, and bulk job snapshots on free/ephemeral hosts.
 - Session durability path: D1 sessions table (when D1 enabled) instead of memory-only sessions.
 - Queue durability path: startup/interval bulk worker processing to recover queued jobs.
+- Route split:
+  - `/` public marketing + signup
+  - `/app` authenticated fax workspace
 
 ## Non-Functional Requirements
 - Clear error messages for blocked send conditions.

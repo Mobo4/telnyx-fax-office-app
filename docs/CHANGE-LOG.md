@@ -1,5 +1,23 @@
 # Change Log
 
+## 2026-02-27 (public marketing + self-signup wave)
+### Completed
+- Added route split:
+  - `/` public marketing website
+  - `/app` fax application workspace
+- Added new public signup endpoint:
+  - `POST /api/public/signup`
+  - creates tenant + first admin user
+  - in paid mode, returns Stripe checkout URL for subscription activation
+- Updated Google auth post-login redirects to `/app`.
+- Added new marketing assets:
+  - `/Users/alex/Documents/Projects/Telnyx/public/index.html` (public landing page)
+  - `/Users/alex/Documents/Projects/Telnyx/public/marketing.css`
+  - `/Users/alex/Documents/Projects/Telnyx/public/marketing.js`
+- Added tenant auth fallback behavior:
+  - when D1 user mode is enabled, non-default tenants use local user store instead of hard fail
+  - enables non-default tenant login/signup continuity without breaking default tenant D1 users
+
 ## 2026-02-27 (stripe subscription + cancel portal wave)
 ### Completed
 - Added Stripe billing runtime support (paid mode):

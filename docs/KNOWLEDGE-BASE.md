@@ -45,6 +45,7 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 
 ## API Surface (primary)
 - Auth: `/api/auth/login`, `/api/auth/logout`, `/api/auth/me`
+- Public signup: `/api/public/signup`
 - Google auth: `/api/auth/google/config`, `/api/auth/google/start`, `/api/auth/google/callback`
 - Google link flow (authenticated): `/api/auth/google/link/start`
 - Send/history: `/api/faxes`, `/api/faxes/:id/refresh`
@@ -220,6 +221,9 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - Cloudflare Containers can run containerized apps and can remove need for Render once migrated and validated.
 - Tailscale is optional only for self-hosted private-server patterns; it is not required for public webhook deployments on Render/Cloudflare.
 - On Render, app defaults data path to `/var/data/telnyx-fax-office-app` when `/var/data` is available.
+- Route split:
+  - `/` serves marketing website with signup modal.
+  - `/app` serves the fax workspace UI.
 
 ## Known Environment Caveats
 - If app runs only on `http://localhost`, Telnyx cannot fetch upload files, so real outbound fax sends fail.

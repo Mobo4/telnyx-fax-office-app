@@ -56,6 +56,7 @@
 - [x] Expand phone validation message to clearly include international E.164 support.
 - [x] Add manual retry action in Sent History for failed outbound faxes (working `Retry` button + backend resend API).
 - [x] Add Stripe subscription flow (admin checkout session + Stripe customer portal cancel/manage + webhook sync).
+- [x] Add public marketing + signup flow (`/` marketing site, `/app` workspace, `/api/public/signup` + Stripe checkout redirect).
 
 ## Next Tasks
 - [ ] Execute commercial SaaS program in `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-commercial-saas-hipaa.md`.

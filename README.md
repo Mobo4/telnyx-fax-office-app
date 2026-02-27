@@ -110,9 +110,18 @@ npm start
 
 Open:
 
-- `http://localhost:10000`
+- `http://localhost:10000` (public marketing + signup page)
+- `http://localhost:10000/app` (fax app login/workspace)
 
 ## 4. Login and roles
+
+Public signup:
+
+- `POST /api/public/signup` creates:
+  - tenant workspace
+  - first admin user
+  - optional Stripe checkout session URL (when paid billing mode is enabled)
+- Marketing page signup modal calls this endpoint and redirects to Stripe checkout when required.
 
 - `admin`:
   - Send/view faxes
