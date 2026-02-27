@@ -1,5 +1,18 @@
 # Change Log
 
+## 2026-02-27 (google account-linking wave)
+### Completed
+- Added authenticated Google account linking endpoint:
+  - `GET /api/auth/google/link/start`
+- Extended OAuth callback to support two modes:
+  - `login`: standard Google login / auto-provision behavior
+  - `link`: link Google identity to the currently authenticated account
+- Added conflict protection when a Google account is already linked to a different user.
+- Added in-app session action button:
+  - `Link Google Login` (shows linked state when complete)
+- Preserved local username/password login so linked users can still authenticate locally.
+- Updated continuity docs for linking behavior and API route.
+
 ## 2026-02-23 (google shared-account auth wave)
 ### Completed
 - Added optional Google OAuth login endpoints:

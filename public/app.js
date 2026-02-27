@@ -7,6 +7,7 @@ const loginMessage = document.getElementById("login-message");
 const tenantInput = document.getElementById("tenant_id");
 const googleSigninBtn = document.getElementById("google-signin-btn");
 const googleLoginHint = document.getElementById("google-login-hint");
+const googleLinkBtn = document.getElementById("google-link-btn");
 const logoutBtn = document.getElementById("logout-btn");
 const settingsToggleBtn = document.getElementById("settings-toggle-btn");
 const sessionLabel = document.getElementById("session-label");
@@ -347,6 +348,22 @@ function applyGoogleAuthUI() {
   googleLoginHint.textContent = "Use your Google account for this tenant workspace.";
 }
 
+function applyGoogleLinkButton() {
+  if (!googleLinkBtn) return;
+  const auth = state.googleAuth || {};
+  const canUseGoogle = auth.enabled === true && auth.configured === true;
+  const isAuthenticated = Boolean(state.user);
+  const provider = normalizeAuthProvider(state.user?.auth_provider || "local");
+  const linked = provider === "google";
+  const showButton = isAuthenticated && canUseGoogle;
+  googleLinkBtn.classList.toggle("hidden", !showButton);
+  if (!showButton) {
+    return;
+  }
+  googleLinkBtn.disabled = linked;
+  googleLinkBtn.textContent = linked ? "Google Linked" : "Link Google Login";
+}
+
 async function loadGoogleAuthConfig({ silent = false } = {}) {
   const tenantId = normalizeTenantId(tenantInput?.value || state.tenantId || "default");
   state.tenantId = tenantId;
@@ -355,6 +372,7 @@ async function loadGoogleAuthConfig({ silent = false } = {}) {
     const body = await api(`/api/auth/google/config?tenant_id=${encodeURIComponent(tenantId)}`);
     state.googleAuth = body || {};
     applyGoogleAuthUI();
+    applyGoogleLinkButton();
     return body;
   } catch (error) {
     state.googleAuth = {
@@ -364,6 +382,7 @@ async function loadGoogleAuthConfig({ silent = false } = {}) {
       tenant_active: false
     };
     applyGoogleAuthUI();
+    applyGoogleLinkButton();
     if (!silent) {
       setMessage(loginMessage, error.message);
     }
@@ -733,6 +752,7 @@ function setAuthenticatedView(user) {
     loadGoogleAuthConfig({ silent: true }).catch(() => {});
   }
   applyAdminPanelVisibility();
+  applyGoogleLinkButton();
 }
 
 function applyAppSettingsToSendForm() {
@@ -1331,6 +1351,21 @@ if (googleSigninBtn) {
       return;
     }
     window.location.assign(`/api/auth/google/start?tenant_id=${encodeURIComponent(tenantId)}`);
+  });
+}
+
+if (googleLinkBtn) {
+  googleLinkBtn.addEventListener("click", async () => {
+    if (!state.user) return;
+    const tenantId = normalizeTenantId(state.tenantId || tenantInput?.value || "default");
+    state.tenantId = tenantId;
+    window.localStorage.setItem("fax_app_tenant_id", tenantId);
+    const config = await loadGoogleAuthConfig({ silent: true });
+    if (!config?.enabled || !config?.configured) {
+      setMessage(sendMessage, "Google sign-in is not configured yet.");
+      return;
+    }
+    window.location.assign(`/api/auth/google/link/start?tenant_id=${encodeURIComponent(tenantId)}`);
   });
 }
 

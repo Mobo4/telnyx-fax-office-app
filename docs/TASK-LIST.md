@@ -51,6 +51,7 @@
 - [x] Support admin creation of Google-provider users by email for shared tenant account access.
 - [x] Keep local login available and restrict password reset to local-provider users.
 - [x] Add Google auth environment/config documentation and implementation PRD.
+- [x] Add explicit account-link flow so existing logged-in users can attach Google auth to their current account.
 
 ## Next Tasks
 - [ ] Execute commercial SaaS program in `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-commercial-saas-hipaa.md`.

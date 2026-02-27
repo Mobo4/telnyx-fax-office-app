@@ -16,6 +16,7 @@ Current local login requires manual password distribution and rotation. Office t
 - Add provider-aware user management (`local`, `google`).
 - Permit admin to create Google users by email (optional custom username).
 - Support first-login auto-provisioning of Google users when enabled.
+- Allow existing logged-in users to link Google identity to their current account.
 - Enforce tenant scoping and role checks exactly as existing auth model.
 
 ## Non-Goals
@@ -34,6 +35,7 @@ Current local login requires manual password distribution and rotation. Office t
 - `google` user create (`google_email + optional username + role`)
 7. Google users cannot reset password through local password reset endpoint.
 8. Existing admin-only settings access control remains unchanged.
+9. Authenticated local users can link Google via explicit link flow and retain username/role.
 
 ## Security Requirements
 - Keep Telnyx credentials server-side only.

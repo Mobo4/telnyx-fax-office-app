@@ -42,6 +42,7 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Optional Google Sign-In per tenant (`local` and `google` auth providers supported).
 - Admin can create Google users by Google email (with optional custom username) under the tenant.
 - Google callback may auto-create tenant users (configurable).
+- Logged-in users can link their existing account to Google via explicit `Link Google Login` flow.
 - Add login throttling per IP and temporary lockouts per username.
 - Add durable session store (D1-backed where configured) for restart-safe auth sessions.
 - Reject unknown/non-provisioned tenant IDs at login and protected API routes.
@@ -149,6 +150,7 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Login page shows Google Sign-In only when feature is enabled/configured.
 - Google users cannot access admin settings unless role is `admin`.
 - Non-admin users cannot access settings even if authenticated via Google.
+- Existing local accounts can link Google identity and keep the same username/role.
 
 ## Gaps Reviewed and Resolved
 - Gap: send failures were not obvious enough.

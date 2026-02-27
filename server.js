@@ -3473,20 +3473,6 @@ app.post("/api/auth/login", async (req, res) => {
       return res.status(protectionStatus.status || 429).json({ error: protectionStatus.error });
     }
     const user = await getUserByUsernameStore(username, tenantId);
-    if (user && normalizeAuthProvider(user.auth_provider) !== "local") {
-      registerFailedAuthAttempt({ ip: clientIp, username });
-      appendAuditEvent({
-        tenantId,
-        actorUsername: username || "unknown",
-        actorRole: "anonymous",
-        action: "auth.login.failed",
-        targetType: "user",
-        targetId: user.id || "",
-        ipAddress: clientIp,
-        metadata: { reason: "provider_google" }
-      });
-      return res.status(401).json({ error: "Use Google Sign-In for this user account." });
-    }
 
     if (!user || !verifyUserPassword(user, password)) {
       registerFailedAuthAttempt({ ip: clientIp, username });
@@ -3596,6 +3582,7 @@ app.get("/api/auth/google/start", async (req, res) => {
       tenant_id: tenantId,
       state: stateValue,
       nonce: nonceValue,
+      mode: "login",
       created_at: Date.now()
     };
     await saveSession(req);
@@ -3623,6 +3610,67 @@ app.get("/api/auth/google/start", async (req, res) => {
       metadata: { reason: error.message || "unknown" }
     });
     return redirectToLoginWithAuthError(res, { tenantId, message: error.message || "Google sign-in failed." });
+  }
+});
+
+app.get("/api/auth/google/link/start", async (req, res) => {
+  const tenantId = normalizeTenantId(req.tenant_id);
+  const clientIp = getAuthClientIp(req);
+  try {
+    if (!isGoogleAuthConfigured()) {
+      throw new Error("Google sign-in is not configured.");
+    }
+    const sessionUser = req.session?.user || null;
+    if (!sessionUser) {
+      throw new Error("Login required.");
+    }
+    if (normalizeTenantId(sessionUser.tenant_id) !== tenantId) {
+      throw new Error("Tenant mismatch.");
+    }
+    const tenant = getTenantById(tenantId);
+    if (!tenant) {
+      throw new Error("Tenant is not provisioned.");
+    }
+    if (tenant.active === false) {
+      throw new Error("Tenant is suspended.");
+    }
+
+    const stateValue = crypto.randomBytes(24).toString("base64url");
+    const nonceValue = crypto.randomBytes(24).toString("base64url");
+    const redirectUri = getGoogleRedirectUri(req);
+    req.session.google_oauth = {
+      tenant_id: tenantId,
+      state: stateValue,
+      nonce: nonceValue,
+      mode: "link",
+      link_username: sessionUser.username,
+      created_at: Date.now()
+    };
+    await saveSession(req);
+
+    const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+    authUrl.searchParams.set("client_id", GOOGLE_CLIENT_ID);
+    authUrl.searchParams.set("redirect_uri", redirectUri);
+    authUrl.searchParams.set("response_type", "code");
+    authUrl.searchParams.set("scope", "openid email profile");
+    authUrl.searchParams.set("state", stateValue);
+    authUrl.searchParams.set("nonce", nonceValue);
+    authUrl.searchParams.set("prompt", "select_account");
+    authUrl.searchParams.set("access_type", "offline");
+
+    return res.redirect(authUrl.toString());
+  } catch (error) {
+    appendAuditEvent({
+      tenantId,
+      actorUsername: req.session?.user?.username || "unknown",
+      actorRole: req.session?.user?.role || "user",
+      action: "auth.google.link_start_failed",
+      targetType: "user",
+      targetId: req.session?.user?.id || "",
+      ipAddress: clientIp,
+      metadata: { reason: error.message || "unknown" }
+    });
+    return redirectToLoginWithAuthError(res, { tenantId, message: error.message || "Google link start failed." });
   }
 });
 
@@ -3675,6 +3723,8 @@ app.get("/api/auth/google/callback", async (req, res) => {
       expectedNonce: oauthState.nonce
     });
     const usernameFromEmail = buildGoogleUsernameFromEmail(profile.email);
+    const mode = (oauthState.mode || "login").toString();
+    const linkUsername = normalizeUsername(oauthState.link_username || "");
     let user = await getGoogleUserByIdentityStore({
       email: profile.email,
       sub: profile.sub,
@@ -3682,34 +3732,63 @@ app.get("/api/auth/google/callback", async (req, res) => {
       tenantId
     });
 
-    if (!user && !GOOGLE_AUTH_AUTO_CREATE_USERS) {
-      throw new Error("Your Google account is not linked to this workspace. Ask an admin to add your Google user.");
-    }
-
-    if (!user) {
-      user = await createGoogleUserWithUniqueUsernameStore({
-        tenantId,
-        email: profile.email,
-        googleSub: profile.sub,
-        role: GOOGLE_AUTH_DEFAULT_ROLE
-      });
-      appendAuditEvent({
-        tenantId,
-        actorUsername: user.username,
-        actorRole: user.role,
-        action: "auth.google.user_auto_created",
-        targetType: "user",
-        targetId: user.id,
-        ipAddress: clientIp,
-        metadata: { email: profile.email, role: user.role }
-      });
-    } else {
+    if (mode === "link") {
+      if (!linkUsername) {
+        throw new Error("Could not determine account to link.");
+      }
+      const localUser = await getUserByUsernameStore(linkUsername, tenantId);
+      if (!localUser) {
+        throw new Error("Local account to link was not found.");
+      }
+      if (user && user.username !== localUser.username) {
+        throw new Error("This Google account is already linked to another user.");
+      }
       user = await syncGoogleUserIdentityStore({
-        username: user.username,
+        username: localUser.username,
         email: profile.email,
         sub: profile.sub,
         tenantId
       });
+      appendAuditEvent({
+        tenantId,
+        actorUsername: localUser.username,
+        actorRole: localUser.role,
+        action: "auth.google.linked",
+        targetType: "user",
+        targetId: localUser.id,
+        ipAddress: clientIp,
+        metadata: { email: profile.email }
+      });
+    } else {
+      if (!user && !GOOGLE_AUTH_AUTO_CREATE_USERS) {
+        throw new Error("Your Google account is not linked to this workspace. Ask an admin to add your Google user.");
+      }
+
+      if (!user) {
+        user = await createGoogleUserWithUniqueUsernameStore({
+          tenantId,
+          email: profile.email,
+          googleSub: profile.sub,
+          role: GOOGLE_AUTH_DEFAULT_ROLE
+        });
+        appendAuditEvent({
+          tenantId,
+          actorUsername: user.username,
+          actorRole: user.role,
+          action: "auth.google.user_auto_created",
+          targetType: "user",
+          targetId: user.id,
+          ipAddress: clientIp,
+          metadata: { email: profile.email, role: user.role }
+        });
+      } else {
+        user = await syncGoogleUserIdentityStore({
+          username: user.username,
+          email: profile.email,
+          sub: profile.sub,
+          tenantId
+        });
+      }
     }
 
     req.session.user = sanitizeUser({ ...user, tenant_id: tenantId });
@@ -3725,7 +3804,7 @@ app.get("/api/auth/google/callback", async (req, res) => {
       targetType: "user",
       targetId: user.id,
       ipAddress: clientIp,
-      metadata: { method: "google" }
+      metadata: { method: "google", mode }
     });
     return redirectToAppAfterAuth(res, { tenantId });
   } catch (error) {

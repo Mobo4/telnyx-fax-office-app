@@ -44,6 +44,7 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 ## API Surface (primary)
 - Auth: `/api/auth/login`, `/api/auth/logout`, `/api/auth/me`
 - Google auth: `/api/auth/google/config`, `/api/auth/google/start`, `/api/auth/google/callback`
+- Google link flow (authenticated): `/api/auth/google/link/start`
 - Send/history: `/api/faxes`, `/api/faxes/:id/refresh`
 - Uploads: `/api/uploads/batch`
 - Contacts: `/api/contacts`, `/api/contacts/import`, `/api/contacts/tags`, `/api/contacts/frequent`
@@ -168,6 +169,7 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - User records now carry `auth_provider`, `email`, and optional `google_sub` for identity linking.
 - Password resets are limited to `local` users; Google-provider users authenticate through OAuth.
 - Google user lookup is tenant-scoped and matches by `google_sub`, email, or generated username.
+- Linking behavior: authenticated local user can start Google link flow and callback updates that same account with Google identity.
 
 ## History Retention Behavior
 - `/api/faxes` returns most-recent rows (default `50`, max `100`) and syncs latest records from Telnyx before responding.
