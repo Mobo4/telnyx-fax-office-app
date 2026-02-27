@@ -9,6 +9,7 @@ const multer = require("multer");
 const { parse: parseCsv } = require("csv-parse/sync");
 const nodemailer = require("nodemailer");
 const PDFDocument = require("pdfkit");
+const Stripe = require("stripe");
 require("dotenv").config();
 
 const app = express();
@@ -126,6 +127,22 @@ const GOOGLE_AUTH_ALLOWED_DOMAINS = Array.from(
       .filter(Boolean)
   )
 );
+const STRIPE_SECRET_KEY = (process.env.STRIPE_SECRET_KEY || "").trim();
+const STRIPE_WEBHOOK_SECRET = (process.env.STRIPE_WEBHOOK_SECRET || "").trim();
+const STRIPE_PRICE_STARTER_MONTHLY = (process.env.STRIPE_PRICE_STARTER_MONTHLY || "").trim();
+const STRIPE_PRICE_PRO_MONTHLY = (process.env.STRIPE_PRICE_PRO_MONTHLY || "").trim();
+const STRIPE_PRICE_ENTERPRISE_MONTHLY = (process.env.STRIPE_PRICE_ENTERPRISE_MONTHLY || "").trim();
+const STRIPE_DEFAULT_PLAN = (process.env.STRIPE_DEFAULT_PLAN || "starter").toString().trim().toLowerCase();
+const STRIPE_SUCCESS_URL = (process.env.STRIPE_SUCCESS_URL || "").trim();
+const STRIPE_CANCEL_URL = (process.env.STRIPE_CANCEL_URL || "").trim();
+const STRIPE_PORTAL_RETURN_URL = (process.env.STRIPE_PORTAL_RETURN_URL || "").trim();
+const STRIPE_ENABLED = BILLING_MODE === "paid" && Boolean(STRIPE_SECRET_KEY);
+const STRIPE_PRICE_BY_PLAN = {
+  starter: STRIPE_PRICE_STARTER_MONTHLY,
+  pro: STRIPE_PRICE_PRO_MONTHLY,
+  enterprise: STRIPE_PRICE_ENTERPRISE_MONTHLY
+};
+const stripeClient = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 const D1_SYNC_STORE_FILENAMES = new Set([
   "faxes.json",
   "faxes_archive.json",
@@ -155,6 +172,61 @@ const effectiveMediaUrlSigningSecret = MEDIA_URL_SIGNING_SECRET || sessionSecret
 
 function defaultTenantPlan() {
   return BILLING_MODE === "paid" ? "starter" : "free";
+}
+
+function normalizePlanName(value, fallback = defaultTenantPlan()) {
+  const plan = (value || "").toString().trim().toLowerCase();
+  if (PLAN_LIMITS[plan]) {
+    return plan;
+  }
+  return fallback;
+}
+
+function normalizeBillingStatus(value, fallback = "active") {
+  const status = (value || "").toString().trim().toLowerCase();
+  if (["active", "trialing", "past_due", "canceled", "suspended", "incomplete", "unpaid"].includes(status)) {
+    return status;
+  }
+  return fallback;
+}
+
+function isStripeConfiguredForPlan(plan) {
+  const normalizedPlan = normalizePlanName(plan, STRIPE_DEFAULT_PLAN);
+  return Boolean(STRIPE_PRICE_BY_PLAN[normalizedPlan]);
+}
+
+function stripePriceIdForPlan(plan) {
+  const normalizedPlan = normalizePlanName(plan, STRIPE_DEFAULT_PLAN);
+  return STRIPE_PRICE_BY_PLAN[normalizedPlan] || "";
+}
+
+function planNameForStripePriceId(priceId, fallback = STRIPE_DEFAULT_PLAN) {
+  const target = (priceId || "").toString().trim();
+  if (!target) {
+    return normalizePlanName(fallback, defaultTenantPlan());
+  }
+  for (const [plan, configuredPriceId] of Object.entries(STRIPE_PRICE_BY_PLAN)) {
+    if (configuredPriceId && configuredPriceId === target) {
+      return plan;
+    }
+  }
+  return normalizePlanName(fallback, defaultTenantPlan());
+}
+
+function buildAbsoluteUrl(req, configuredUrl, fallbackPath = "/") {
+  const candidate = (configuredUrl || "").toString().trim();
+  if (candidate) {
+    try {
+      const parsed = new URL(candidate);
+      if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+        return parsed.toString();
+      }
+    } catch (error) {
+      // ignore invalid configured URL and fallback
+    }
+  }
+  const base = `${req.protocol}://${req.get("host")}`;
+  return `${base}${fallbackPath}`;
 }
 
 app.set("trust proxy", 1);
@@ -1003,9 +1075,7 @@ function createTenantRecord({
   if (getTenantById(normalizedTenantId)) {
     throw new Error("Tenant already exists.");
   }
-  const planName = PLAN_LIMITS[(plan || "").toString().trim().toLowerCase()]
-    ? (plan || "").toString().trim().toLowerCase()
-    : defaultTenantPlan();
+  const planName = normalizePlanName(plan, defaultTenantPlan());
   const store = readTenantsStore();
   const now = new Date().toISOString();
   const tenant = {
@@ -1047,6 +1117,11 @@ function getTenantBilling(tenantId) {
       plan: "free",
       seats: 9999,
       status: tenant.active === false ? "suspended" : "active",
+      stripe_customer_id: "",
+      stripe_subscription_id: "",
+      stripe_price_id: "",
+      stripe_checkout_session_id: "",
+      stripe_current_period_end: "",
       created_at: tenant.created_at || new Date().toISOString(),
       updated_at: tenant.updated_at || new Date().toISOString()
     };
@@ -1054,9 +1129,14 @@ function getTenantBilling(tenantId) {
   const now = new Date().toISOString();
   const billing = billingStore.items?.[normalizedTenantId] || {
     tenant_id: normalizedTenantId,
-    plan: tenant.plan || defaultTenantPlan(),
+    plan: normalizePlanName(tenant.plan || defaultTenantPlan(), defaultTenantPlan()),
     seats: 5,
     status: tenant.active === false ? "suspended" : "active",
+    stripe_customer_id: "",
+    stripe_subscription_id: "",
+    stripe_price_id: "",
+    stripe_checkout_session_id: "",
+    stripe_current_period_end: "",
     created_at: now,
     updated_at: now
   };
@@ -1070,8 +1150,8 @@ function getTenantBilling(tenantId) {
   return billing;
 }
 
-function updateTenantBilling(tenantId, patch = {}) {
-  if (BILLING_MODE !== "paid") {
+function applyTenantBillingPatch(tenantId, patch = {}, { allowFreeMode = false } = {}) {
+  if (BILLING_MODE !== "paid" && !allowFreeMode) {
     throw new Error("Billing mode is set to free. Paid plan updates are disabled.");
   }
   const normalizedTenantId = normalizeTenantId(tenantId);
@@ -1081,13 +1161,35 @@ function updateTenantBilling(tenantId, patch = {}) {
   }
   const billingStore = readBillingStore();
   const existing = getTenantBilling(normalizedTenantId);
-  const nextPlan = (patch.plan || existing.plan || defaultTenantPlan()).toString().trim().toLowerCase();
-  const plan = PLAN_LIMITS[nextPlan] && nextPlan !== "free" ? nextPlan : existing.plan || defaultTenantPlan();
+  const nextPlan = normalizePlanName(
+    patch.plan || existing.plan || defaultTenantPlan(),
+    existing.plan || defaultTenantPlan()
+  );
   const next = {
     ...existing,
-    plan,
+    plan: nextPlan,
     seats: Math.max(1, Number(patch.seats || existing.seats || 1)),
-    status: (patch.status || existing.status || "active").toString().trim().toLowerCase(),
+    status: normalizeBillingStatus(patch.status || existing.status || "active", existing.status || "active"),
+    stripe_customer_id:
+      patch.stripe_customer_id !== undefined
+        ? (patch.stripe_customer_id || "").toString().trim()
+        : (existing.stripe_customer_id || "").toString().trim(),
+    stripe_subscription_id:
+      patch.stripe_subscription_id !== undefined
+        ? (patch.stripe_subscription_id || "").toString().trim()
+        : (existing.stripe_subscription_id || "").toString().trim(),
+    stripe_price_id:
+      patch.stripe_price_id !== undefined
+        ? (patch.stripe_price_id || "").toString().trim()
+        : (existing.stripe_price_id || "").toString().trim(),
+    stripe_checkout_session_id:
+      patch.stripe_checkout_session_id !== undefined
+        ? (patch.stripe_checkout_session_id || "").toString().trim()
+        : (existing.stripe_checkout_session_id || "").toString().trim(),
+    stripe_current_period_end:
+      patch.stripe_current_period_end !== undefined
+        ? (patch.stripe_current_period_end || "").toString().trim()
+        : (existing.stripe_current_period_end || "").toString().trim(),
     updated_at: new Date().toISOString()
   };
   billingStore.items = billingStore.items || {};
@@ -1098,11 +1200,15 @@ function updateTenantBilling(tenantId, patch = {}) {
   tenants.items[normalizedTenantId] = {
     ...tenant,
     plan: next.plan,
-    active: next.status !== "suspended",
+    active: !["suspended", "canceled"].includes(next.status),
     updated_at: new Date().toISOString()
   };
   writeTenantsStore(tenants);
   return next;
+}
+
+function updateTenantBilling(tenantId, patch = {}) {
+  return applyTenantBillingPatch(tenantId, patch);
 }
 
 function getTenantPlanLimits(tenantId) {
@@ -1112,6 +1218,41 @@ function getTenantPlanLimits(tenantId) {
   const billing = getTenantBilling(tenantId);
   const plan = (billing?.plan || defaultTenantPlan()).toLowerCase();
   return PLAN_LIMITS[plan] || PLAN_LIMITS.starter;
+}
+
+function findTenantIdByStripeIdentity({ customerId = "", subscriptionId = "" } = {}) {
+  const normalizedCustomerId = (customerId || "").toString().trim();
+  const normalizedSubscriptionId = (subscriptionId || "").toString().trim();
+  if (!normalizedCustomerId && !normalizedSubscriptionId) {
+    return "";
+  }
+  const store = readBillingStore();
+  for (const [tenantId, item] of Object.entries(store.items || {})) {
+    if (!item || typeof item !== "object") continue;
+    if (normalizedCustomerId && (item.stripe_customer_id || "").toString().trim() === normalizedCustomerId) {
+      return normalizeTenantId(tenantId);
+    }
+    if (
+      normalizedSubscriptionId &&
+      (item.stripe_subscription_id || "").toString().trim() === normalizedSubscriptionId
+    ) {
+      return normalizeTenantId(tenantId);
+    }
+  }
+  return "";
+}
+
+function mapStripeSubscriptionStatus(status) {
+  const normalized = (status || "").toString().trim().toLowerCase();
+  if (normalized === "active") return "active";
+  if (normalized === "trialing") return "trialing";
+  if (normalized === "past_due") return "past_due";
+  if (normalized === "canceled") return "canceled";
+  if (normalized === "unpaid") return "unpaid";
+  if (normalized === "incomplete") return "incomplete";
+  if (normalized === "incomplete_expired") return "suspended";
+  if (normalized === "paused") return "suspended";
+  return "active";
 }
 
 function readAuditStore() {
@@ -3996,6 +4137,7 @@ app.use("/api", (req, res, next) => {
     "/auth/google/config",
     "/auth/google/start",
     "/auth/google/callback",
+    "/webhooks/stripe",
     "/webhooks/telnyx"
   ]);
   if (openRoutes.has(req.path)) {
@@ -4483,7 +4625,9 @@ app.get("/api/health", (req, res) => {
       billing_mode: BILLING_MODE,
       default_tenant_id: DEFAULT_TENANT_ID,
       active_tenant_id: tenantId,
-      idempotency_ttl_seconds: IDEMPOTENCY_TTL_SECONDS
+      idempotency_ttl_seconds: IDEMPOTENCY_TTL_SECONDS,
+      stripe_enabled: STRIPE_ENABLED,
+      stripe_webhook_configured: Boolean(STRIPE_WEBHOOK_SECRET)
     }
   });
 });
@@ -5410,12 +5554,29 @@ app.get("/api/admin/billing", requireAdmin, (req, res) => {
   }
   const billing = getTenantBilling(tenantId);
   const limits = getTenantPlanLimits(tenantId);
+  const stripeConfiguredPlans = Object.entries(STRIPE_PRICE_BY_PLAN)
+    .filter(([, priceId]) => Boolean(priceId))
+    .map(([plan]) => plan);
+  const supportedPlans =
+    BILLING_MODE === "paid"
+      ? STRIPE_ENABLED
+        ? stripeConfiguredPlans.length
+          ? stripeConfiguredPlans
+          : BILLING_SUPPORTED_PLANS
+        : BILLING_SUPPORTED_PLANS
+      : [];
   return res.json({
     tenant_id: tenantId,
     billing_mode: BILLING_MODE,
     billing,
     limits,
-    supported_plans: BILLING_MODE === "paid" ? BILLING_SUPPORTED_PLANS : []
+    supported_plans: supportedPlans,
+    stripe: {
+      enabled: STRIPE_ENABLED,
+      default_plan: normalizePlanName(STRIPE_DEFAULT_PLAN, "starter"),
+      configured_plans: stripeConfiguredPlans,
+      has_portal: STRIPE_ENABLED
+    }
   });
 });
 
@@ -5444,6 +5605,115 @@ app.patch("/api/admin/billing", requireAdmin, (req, res) => {
     });
   } catch (error) {
     return res.status(400).json({ error: error.message || "Could not update billing." });
+  }
+});
+
+app.post("/api/admin/billing/checkout-session", requireAdmin, async (req, res) => {
+  try {
+    if (!STRIPE_ENABLED || !stripeClient) {
+      return res.status(400).json({ error: "Stripe billing is not enabled on this server." });
+    }
+    const tenantId = normalizeTenantId(req.tenant_id);
+    const tenant = getTenantById(tenantId);
+    if (!tenant) {
+      return res.status(404).json({ error: "Tenant not found." });
+    }
+    const requestedPlan = normalizePlanName(req.body.plan || STRIPE_DEFAULT_PLAN, STRIPE_DEFAULT_PLAN);
+    if (requestedPlan === "free") {
+      return res.status(400).json({ error: "Checkout is only available for paid plans." });
+    }
+    if (!isStripeConfiguredForPlan(requestedPlan)) {
+      return res.status(400).json({ error: `Stripe price is not configured for plan "${requestedPlan}".` });
+    }
+
+    const billing = getTenantBilling(tenantId);
+    const priceId = stripePriceIdForPlan(requestedPlan);
+    const successUrl = buildAbsoluteUrl(req, STRIPE_SUCCESS_URL, "/?billing=success");
+    const cancelUrl = buildAbsoluteUrl(req, STRIPE_CANCEL_URL, "/?billing=cancel");
+    const cfg = getRuntimeConfig(tenantId);
+    const email = (req.session.user?.email || cfg.outbound_copy_email || "").trim().toLowerCase();
+
+    const checkoutSession = await stripeClient.checkout.sessions.create({
+      mode: "subscription",
+      success_url: successUrl,
+      cancel_url: cancelUrl,
+      customer: billing?.stripe_customer_id || undefined,
+      customer_email: !billing?.stripe_customer_id && isEmail(email) ? email : undefined,
+      client_reference_id: tenantId,
+      line_items: [{ price: priceId, quantity: 1 }],
+      allow_promotion_codes: true,
+      metadata: {
+        tenant_id: tenantId,
+        plan: requestedPlan
+      },
+      subscription_data: {
+        metadata: {
+          tenant_id: tenantId,
+          plan: requestedPlan
+        }
+      }
+    });
+
+    const next = applyTenantBillingPatch(tenantId, {
+      plan: requestedPlan,
+      stripe_customer_id: checkoutSession.customer ? checkoutSession.customer.toString() : billing?.stripe_customer_id,
+      stripe_checkout_session_id: checkoutSession.id
+    });
+    appendAuditEvent({
+      tenantId,
+      actorUsername: req.session.user?.username || "unknown",
+      actorRole: req.session.user?.role || "admin",
+      action: "admin.billing.checkout_created",
+      targetType: "billing",
+      targetId: tenantId,
+      ipAddress: getAuthClientIp(req),
+      metadata: { plan: requestedPlan, checkout_session_id: checkoutSession.id }
+    });
+
+    return res.status(201).json({
+      checkout_url: checkoutSession.url,
+      checkout_session_id: checkoutSession.id,
+      billing: next
+    });
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Could not create Stripe checkout session." });
+  }
+});
+
+app.post("/api/admin/billing/portal-session", requireAdmin, async (req, res) => {
+  try {
+    if (!STRIPE_ENABLED || !stripeClient) {
+      return res.status(400).json({ error: "Stripe billing is not enabled on this server." });
+    }
+    const tenantId = normalizeTenantId(req.tenant_id);
+    const billing = getTenantBilling(tenantId);
+    const customerId = (billing?.stripe_customer_id || "").toString().trim();
+    if (!customerId) {
+      return res.status(400).json({ error: "No Stripe customer is linked yet. Start a subscription first." });
+    }
+
+    const returnUrl = buildAbsoluteUrl(req, STRIPE_PORTAL_RETURN_URL, "/");
+    const portalSession = await stripeClient.billingPortal.sessions.create({
+      customer: customerId,
+      return_url: returnUrl
+    });
+
+    appendAuditEvent({
+      tenantId,
+      actorUsername: req.session.user?.username || "unknown",
+      actorRole: req.session.user?.role || "admin",
+      action: "admin.billing.portal_created",
+      targetType: "billing",
+      targetId: tenantId,
+      ipAddress: getAuthClientIp(req),
+      metadata: { customer_id: customerId }
+    });
+
+    return res.status(201).json({
+      portal_url: portalSession.url
+    });
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Could not create Stripe customer portal session." });
   }
 });
 
@@ -5692,6 +5962,135 @@ app.patch("/api/admin/telnyx/fax-application", requireAdmin, async (req, res) =>
     });
   } catch (error) {
     return res.status(400).json({ error: error.message || "Could not update fax application." });
+  }
+});
+
+app.post("/api/webhooks/stripe", async (req, res) => {
+  if (!STRIPE_ENABLED || !stripeClient) {
+    return res.status(200).json({ ok: true, ignored: "stripe_disabled" });
+  }
+  if (!STRIPE_WEBHOOK_SECRET) {
+    return res.status(400).json({ error: "Stripe webhook secret is not configured." });
+  }
+
+  const signature = req.get("stripe-signature") || "";
+  let event;
+  try {
+    event = stripeClient.webhooks.constructEvent(req.rawBody || "", signature, STRIPE_WEBHOOK_SECRET);
+  } catch (error) {
+    return res.status(400).json({ error: `Invalid Stripe signature: ${error.message || "unknown"}` });
+  }
+
+  try {
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object;
+      if (session.mode === "subscription") {
+        const tenantId = normalizeTenantId(
+          session.metadata?.tenant_id || session.client_reference_id || DEFAULT_TENANT_ID
+        );
+        if (getTenantById(tenantId)) {
+          const fallbackPlan = normalizePlanName(session.metadata?.plan || STRIPE_DEFAULT_PLAN, STRIPE_DEFAULT_PLAN);
+          const next = applyTenantBillingPatch(tenantId, {
+            plan: planNameForStripePriceId("", fallbackPlan),
+            status: "active",
+            stripe_customer_id: session.customer ? session.customer.toString() : "",
+            stripe_subscription_id: session.subscription ? session.subscription.toString() : "",
+            stripe_checkout_session_id: session.id || ""
+          });
+          appendAuditEvent({
+            tenantId,
+            actorUsername: "stripe-webhook",
+            actorRole: "system",
+            action: "billing.stripe.checkout_completed",
+            targetType: "billing",
+            targetId: tenantId,
+            ipAddress: getAuthClientIp(req),
+            metadata: {
+              checkout_session_id: session.id || "",
+              stripe_customer_id: next.stripe_customer_id || "",
+              stripe_subscription_id: next.stripe_subscription_id || ""
+            }
+          });
+        }
+      }
+    }
+
+    if (event.type === "customer.subscription.created" || event.type === "customer.subscription.updated") {
+      const subscription = event.data.object;
+      const customerId = (subscription.customer || "").toString();
+      const subscriptionId = (subscription.id || "").toString();
+      const tenantId = normalizeTenantId(
+        subscription.metadata?.tenant_id ||
+          findTenantIdByStripeIdentity({ customerId, subscriptionId }) ||
+          DEFAULT_TENANT_ID
+      );
+      if (getTenantById(tenantId)) {
+        const priceId = (subscription.items?.data?.[0]?.price?.id || "").toString().trim();
+        const fallbackPlan = normalizePlanName(
+          subscription.metadata?.plan || getTenantBilling(tenantId)?.plan || STRIPE_DEFAULT_PLAN,
+          STRIPE_DEFAULT_PLAN
+        );
+        const currentPeriodEndEpoch = Number(subscription.current_period_end || 0);
+        const currentPeriodEnd = currentPeriodEndEpoch
+          ? new Date(currentPeriodEndEpoch * 1000).toISOString()
+          : "";
+        const next = applyTenantBillingPatch(tenantId, {
+          plan: planNameForStripePriceId(priceId, fallbackPlan),
+          status: mapStripeSubscriptionStatus(subscription.status),
+          stripe_customer_id: customerId,
+          stripe_subscription_id: subscriptionId,
+          stripe_price_id: priceId,
+          stripe_current_period_end: currentPeriodEnd
+        });
+        appendAuditEvent({
+          tenantId,
+          actorUsername: "stripe-webhook",
+          actorRole: "system",
+          action: "billing.stripe.subscription_updated",
+          targetType: "billing",
+          targetId: tenantId,
+          ipAddress: getAuthClientIp(req),
+          metadata: {
+            stripe_subscription_id: subscriptionId,
+            stripe_customer_id: customerId,
+            status: next.status,
+            plan: next.plan
+          }
+        });
+      }
+    }
+
+    if (event.type === "customer.subscription.deleted") {
+      const subscription = event.data.object;
+      const customerId = (subscription.customer || "").toString();
+      const subscriptionId = (subscription.id || "").toString();
+      const tenantId = findTenantIdByStripeIdentity({ customerId, subscriptionId });
+      if (tenantId && getTenantById(tenantId)) {
+        const next = applyTenantBillingPatch(tenantId, {
+          status: "canceled",
+          stripe_subscription_id: subscriptionId || "",
+          stripe_customer_id: customerId || ""
+        });
+        appendAuditEvent({
+          tenantId,
+          actorUsername: "stripe-webhook",
+          actorRole: "system",
+          action: "billing.stripe.subscription_deleted",
+          targetType: "billing",
+          targetId: tenantId,
+          ipAddress: getAuthClientIp(req),
+          metadata: {
+            stripe_subscription_id: subscriptionId,
+            stripe_customer_id: customerId,
+            status: next.status
+          }
+        });
+      }
+    }
+
+    return res.status(200).json({ ok: true });
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "Stripe webhook processing failed." });
   }
 });
 

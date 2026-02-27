@@ -34,6 +34,7 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - Optional outbound copy email.
 - Post-send form reset after confirmation modal OK.
 - Admin settings hard-gated to admin role in UI and API (`403` on admin routes for non-admin).
+- Admin billing controls for Stripe checkout and Stripe customer portal (cancel/manage).
 - Login throttling and account lockout after repeated failures.
 - Signed expiring media links for outbound fax document retrieval.
 - Background worker loop for queued bulk fax recovery.
@@ -59,9 +60,12 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - v2 commercial admin APIs:
   - `/api/admin/audit-events`
   - `/api/admin/billing`
+  - `/api/admin/billing/checkout-session`
+  - `/api/admin/billing/portal-session`
   - `/api/admin/tenant`
   - `/api/admin/tenants`
   - `/api/admin/users/:username/mfa`
+  - `/api/webhooks/stripe` (open route, Stripe signature validated)
 
 ## Send Workflow (current)
 1. User fills recipients.
@@ -182,7 +186,14 @@ Operational reference for architecture, workflow behavior, limits, and known edg
   - plan limits resolve to `free` profile
   - `PATCH /api/admin/billing` is intentionally blocked
   - billing endpoints remain in place for future Stripe cutover
-- `BILLING_MODE=paid` unlocks paid plan mutation API paths without changing endpoint contracts.
+- `BILLING_MODE=paid` unlocks Stripe subscription lifecycle APIs.
+- Stripe required env for paid flow:
+  - `STRIPE_SECRET_KEY`
+  - `STRIPE_WEBHOOK_SECRET`
+  - `STRIPE_PRICE_STARTER_MONTHLY` (and optional `PRO` / `ENTERPRISE`)
+- Cancellation path:
+  - admin opens Stripe portal via `POST /api/admin/billing/portal-session`
+  - tenant billing status syncs back via `/api/webhooks/stripe` subscription events.
 
 ## Auth/User Persistence Notes
 - User store is normalized on read/write (supports legacy `items` map or array layouts).

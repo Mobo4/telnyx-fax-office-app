@@ -126,6 +126,10 @@ h3 {
   border-color: #d7e6fb;
 }
 
+.billing-summary p {
+  margin: 6px 0;
+}
+
 .card-header {
   display: flex;
   justify-content: space-between;

@@ -12,6 +12,7 @@ Browser-based fax app for office use. It includes:
 - Login with role-based access (`admin` and `user`)
 - Optional Google Sign-In (per tenant) in addition to local username/password
 - Admin controls for user accounts and Telnyx fax app settings
+- Admin billing panel with Stripe checkout and Stripe portal cancel/manage flow
 - Settings panel opened from a gear button (admin only)
 - Inline file attach on Send Fax page (no popup)
 - Per-user memory of the last media URL used
@@ -80,7 +81,12 @@ Set:
   - `DEFAULT_TENANT_ID` (default `default`)
   - `COMMERCIAL_ENFORCEMENTS_ENABLED` (default `true`)
   - `IDEMPOTENCY_TTL_SECONDS` (default `86400`)
-  - `BILLING_MODE` (`free` by default, set to `paid` when enabling Stripe lifecycle later)
+  - `BILLING_MODE` (`free` by default; set to `paid` to enable Stripe subscription lifecycle)
+  - `STRIPE_SECRET_KEY`
+  - `STRIPE_WEBHOOK_SECRET`
+  - `STRIPE_DEFAULT_PLAN` (`starter`, `pro`, `enterprise`)
+  - `STRIPE_PRICE_STARTER_MONTHLY`, `STRIPE_PRICE_PRO_MONTHLY`, `STRIPE_PRICE_ENTERPRISE_MONTHLY`
+  - Optional URL overrides: `STRIPE_SUCCESS_URL`, `STRIPE_CANCEL_URL`, `STRIPE_PORTAL_RETURN_URL`
 - Optional Cloudflare D1 persistence (users + settings/contacts/fax history snapshots):
   - `CLOUDFLARE_ACCOUNT_ID`
   - `CLOUDFLARE_D1_DATABASE_ID`
@@ -117,6 +123,8 @@ Open:
   - Manage office profile defaults and user accounts
   - Create/reset user accounts
   - Create Google-authenticated users by Google email
+  - Start or upgrade Stripe subscription from Billing card
+  - Open Stripe customer portal to manage/cancel subscription
 - `user`:
   - Send/view faxes only
   - Upload files and reuse previous media URL
@@ -153,6 +161,10 @@ Point your Fax App webhook to:
 This app also accepts:
 
 - `POST /api/webhooks/telnyx`
+
+For paid billing mode (`BILLING_MODE=paid`), Stripe webhook endpoint:
+
+- `POST /api/webhooks/stripe`
 
 Webhook hardening:
 
@@ -271,6 +283,8 @@ CSV template:
 - Billing and plan controls:
   - `GET /api/admin/billing`
   - `PATCH /api/admin/billing`
+  - `POST /api/admin/billing/checkout-session`
+  - `POST /api/admin/billing/portal-session`
   - In `BILLING_MODE=free`, billing API remains available but paid plan updates are blocked.
 - Admin tenant/user security controls:
   - `PATCH /api/admin/users/:username/mfa`

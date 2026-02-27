@@ -104,6 +104,12 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Tag support and frequent contacts (top 5).
 - Hard cap: `3000` contacts.
 
+### Billing and Subscriptions
+- Admin can start a paid subscription via Stripe Checkout.
+- Admin can manage/cancel subscription in Stripe Customer Portal.
+- Billing status, plan, Stripe customer ID, and Stripe subscription ID are visible in admin billing card.
+- Stripe webhooks must sync subscription lifecycle events into tenant billing state.
+
 ### Backend Validation
 - `/api/uploads/batch` enforces max 5 files.
 - `/api/faxes` validates media URLs as public `https://` links (no silent filtering).
@@ -112,6 +118,8 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Telnyx webhook payloads should be signature-verified when key is configured.
 - `/api/faxes/:id/refresh` only refreshes fax IDs already owned by active tenant.
 - `/api/faxes/:id/retry` only retries failed outbound faxes owned by active tenant.
+- `/api/admin/billing/checkout-session` and `/api/admin/billing/portal-session` are admin-only.
+- `/api/webhooks/stripe` must verify Stripe signature using webhook secret.
 - Tenant settings are isolated in tenant-scoped config storage (no global key bleed).
 
 ### Deployment and Availability

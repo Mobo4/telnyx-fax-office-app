@@ -251,6 +251,34 @@
           </section>
 
           <section class="card">
+            <h2>Billing (Stripe)</h2>
+            <p class="helper-text">
+              Start or manage paid subscription in Stripe. Cancellation is handled in Stripe customer portal.
+            </p>
+            <div class="subtle-card billing-summary">
+              <p><strong>Current Plan:</strong> <span id="billing_current_plan">-</span></p>
+              <p><strong>Status:</strong> <span id="billing_status_value">-</span></p>
+              <p><strong>Stripe Customer:</strong> <span id="billing_customer_value" class="mono">-</span></p>
+              <p><strong>Stripe Subscription:</strong> <span id="billing_subscription_value" class="mono">-</span></p>
+            </div>
+
+            <form id="billing-form">
+              <label for="billing_plan_select">Plan</label>
+              <select id="billing_plan_select" name="plan">
+                <option value="starter">starter</option>
+                <option value="pro">pro</option>
+                <option value="enterprise">enterprise</option>
+              </select>
+
+              <div class="row-actions">
+                <button type="button" id="billing_checkout_btn">Start / Upgrade Subscription</button>
+                <button type="button" id="billing_portal_btn" class="secondary">Manage / Cancel in Stripe</button>
+              </div>
+            </form>
+            <p id="billing-message" class="message"></p>
+          </section>
+
+          <section class="card">
             <h2>User Management</h2>
             <form id="create-user-form">
               <label for="new_auth_provider">Auth Provider</label>

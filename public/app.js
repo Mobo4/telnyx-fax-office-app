@@ -71,6 +71,15 @@ const settingsMessage = document.getElementById("settings-message");
 const faxAppForm = document.getElementById("fax-app-form");
 const faxAppMessage = document.getElementById("fax-app-message");
 const loadFaxAppBtn = document.getElementById("load-fax-app");
+const billingForm = document.getElementById("billing-form");
+const billingPlanSelect = document.getElementById("billing_plan_select");
+const billingCheckoutBtn = document.getElementById("billing_checkout_btn");
+const billingPortalBtn = document.getElementById("billing_portal_btn");
+const billingMessage = document.getElementById("billing-message");
+const billingCurrentPlan = document.getElementById("billing_current_plan");
+const billingStatusValue = document.getElementById("billing_status_value");
+const billingCustomerValue = document.getElementById("billing_customer_value");
+const billingSubscriptionValue = document.getElementById("billing_subscription_value");
 
 const createUserForm = document.getElementById("create-user-form");
 const usersMessage = document.getElementById("users-message");
@@ -113,6 +122,11 @@ let state = {
     configured: false,
     tenant_exists: false,
     tenant_active: false
+  },
+  billing: {
+    mode: "free",
+    supportedPlans: [],
+    stripeEnabled: false
   },
   appSettings: {
     outbound_copy_enabled: true,
@@ -1214,6 +1228,65 @@ async function loadFaxAppSettings() {
     body.outbound_channel_limit === null ? "" : String(body.outbound_channel_limit);
 }
 
+function applyBillingUiState() {
+  const stripeEnabled = state.billing?.stripeEnabled === true;
+  if (billingCheckoutBtn) {
+    billingCheckoutBtn.disabled = !stripeEnabled;
+  }
+  if (billingPortalBtn) {
+    billingPortalBtn.disabled = !stripeEnabled;
+  }
+}
+
+async function loadBillingSettings() {
+  const body = await api("/api/admin/billing");
+  const billing = body.billing || {};
+  const supportedPlans = Array.isArray(body.supported_plans) ? body.supported_plans : [];
+  const stripeEnabled = body?.stripe?.enabled === true;
+  state.billing = {
+    mode: (body.billing_mode || "free").toString(),
+    supportedPlans,
+    stripeEnabled
+  };
+
+  if (billingCurrentPlan) {
+    billingCurrentPlan.textContent = billing.plan || "-";
+  }
+  if (billingStatusValue) {
+    billingStatusValue.textContent = billing.status || "-";
+  }
+  if (billingCustomerValue) {
+    billingCustomerValue.textContent = billing.stripe_customer_id || "-";
+  }
+  if (billingSubscriptionValue) {
+    billingSubscriptionValue.textContent = billing.stripe_subscription_id || "-";
+  }
+
+  if (billingPlanSelect) {
+    const allowedPlans = supportedPlans.length ? supportedPlans : ["starter", "pro", "enterprise"];
+    const currentValue = (billingPlanSelect.value || "").toString().trim().toLowerCase();
+    billingPlanSelect.innerHTML = "";
+    allowedPlans.forEach((plan) => {
+      const opt = document.createElement("option");
+      opt.value = plan;
+      opt.textContent = plan;
+      billingPlanSelect.appendChild(opt);
+    });
+    const nextValue = (billing.plan || currentValue || allowedPlans[0] || "starter").toString().trim().toLowerCase();
+    if (allowedPlans.includes(nextValue)) {
+      billingPlanSelect.value = nextValue;
+    }
+  }
+
+  applyBillingUiState();
+  if (!stripeEnabled && billingMessage) {
+    setMessage(
+      billingMessage,
+      "Stripe is not enabled on this server yet. Set billing mode to paid and configure Stripe env vars."
+    );
+  }
+}
+
 function renderUserRow(item) {
   const provider = normalizeAuthProvider(item.auth_provider || "local");
   const canResetPassword = provider === "local";
@@ -1295,7 +1368,8 @@ async function initAfterLogin() {
   if (state.user?.role === "admin") {
     const adminLoaders = [
       { label: "admin settings", run: () => loadAdminSettings() },
-      { label: "users", run: () => loadUsers() }
+      { label: "users", run: () => loadUsers() },
+      { label: "billing", run: () => loadBillingSettings() }
     ];
     const adminResults = await Promise.allSettled(adminLoaders.map((item) => item.run()));
     const adminFailed = adminResults
@@ -1794,6 +1868,59 @@ faxAppForm.addEventListener("submit", async (event) => {
     setMessage(faxAppMessage, error.message);
   }
 });
+
+if (billingForm) {
+  billingForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+  });
+}
+
+if (billingCheckoutBtn) {
+  billingCheckoutBtn.addEventListener("click", async () => {
+    setMessage(billingMessage, "");
+    const plan = (billingPlanSelect?.value || "starter").toString().trim().toLowerCase();
+    billingCheckoutBtn.disabled = true;
+    if (billingPortalBtn) {
+      billingPortalBtn.disabled = true;
+    }
+    try {
+      const body = await api("/api/admin/billing/checkout-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ plan })
+      });
+      if (!body.checkout_url) {
+        throw new Error("Stripe checkout URL was not returned.");
+      }
+      window.location.assign(body.checkout_url);
+    } catch (error) {
+      setMessage(billingMessage, error.message || "Could not start Stripe checkout.");
+      applyBillingUiState();
+    }
+  });
+}
+
+if (billingPortalBtn) {
+  billingPortalBtn.addEventListener("click", async () => {
+    setMessage(billingMessage, "");
+    billingPortalBtn.disabled = true;
+    if (billingCheckoutBtn) {
+      billingCheckoutBtn.disabled = true;
+    }
+    try {
+      const body = await api("/api/admin/billing/portal-session", {
+        method: "POST"
+      });
+      if (!body.portal_url) {
+        throw new Error("Stripe portal URL was not returned.");
+      }
+      window.location.assign(body.portal_url);
+    } catch (error) {
+      setMessage(billingMessage, error.message || "Could not open Stripe portal.");
+      applyBillingUiState();
+    }
+  });
+}
 
 createUserForm.addEventListener("submit", async (event) => {
   event.preventDefault();

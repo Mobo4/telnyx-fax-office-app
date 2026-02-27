@@ -1,5 +1,26 @@
 # Change Log
 
+## 2026-02-27 (stripe subscription + cancel portal wave)
+### Completed
+- Added Stripe billing runtime support (paid mode):
+  - env-driven plan-to-price mapping (`starter`, `pro`, `enterprise`)
+  - tenant billing store fields for Stripe customer/subscription linkage
+- Added admin billing APIs:
+  - `POST /api/admin/billing/checkout-session`
+  - `POST /api/admin/billing/portal-session`
+- Added Stripe webhook endpoint:
+  - `POST /api/webhooks/stripe`
+  - validates Stripe signature with `STRIPE_WEBHOOK_SECRET`
+  - syncs checkout/subscription lifecycle into tenant billing status and plan
+- Added admin Billing card in UI:
+  - current plan/status/customer/subscription visibility
+  - `Start / Upgrade Subscription` (Stripe Checkout)
+  - `Manage / Cancel in Stripe` (Stripe Customer Portal)
+- Added health diagnostics:
+  - `commercial.stripe_enabled`
+  - `commercial.stripe_webhook_configured`
+- Updated configuration docs and `.env.example` for Stripe keys, price IDs, and optional redirect URLs.
+
 ## 2026-02-27 (manual failed-fax retry action)
 ### Completed
 - Added manual retry endpoint for failed outbound faxes:
