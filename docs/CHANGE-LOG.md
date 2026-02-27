@@ -1,5 +1,19 @@
 # Change Log
 
+## 2026-02-27 (manual failed-fax retry action)
+### Completed
+- Added manual retry endpoint for failed outbound faxes:
+  - `POST /api/faxes/:id/retry`
+- Retry endpoint behavior:
+  - validates tenant ownership, outbound direction, and failed status
+  - reuses stored media URLs and recipient
+  - remints fresh signed URLs for local `/media/...` files
+  - returns new queued fax ID and stores retry lineage (`retry_of_fax_id`, `last_manual_retry_fax_id`)
+  - returns explicit actionable error when original uploaded files are no longer available
+- Updated Fax History UI action column:
+  - failed outbound rows now show `Retry` next to `Poll`
+  - button queues retry via API and refreshes history on success
+
 ## 2026-02-27 (busy retry + failure alert wave)
 ### Completed
 - Added webhook-driven failure reason classification for outbound fax failures:

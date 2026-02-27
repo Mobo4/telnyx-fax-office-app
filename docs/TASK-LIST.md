@@ -54,6 +54,7 @@
 - [x] Add explicit account-link flow so existing logged-in users can attach Google auth to their current account.
 - [x] Add busy-line retry queue (3x @ 10-minute interval configurable) and terminal failure alert email.
 - [x] Expand phone validation message to clearly include international E.164 support.
+- [x] Add manual retry action in Sent History for failed outbound faxes (working `Retry` button + backend resend API).
 
 ## Next Tasks
 - [ ] Execute commercial SaaS program in `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-commercial-saas-hipaa.md`.

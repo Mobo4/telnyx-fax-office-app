@@ -3714,6 +3714,31 @@ function getPublicMediaUrl(req, filename) {
   return buildSignedMediaUrl(req, filename);
 }
 
+function remintMediaUrlForRetry(req, mediaUrl) {
+  const raw = (mediaUrl || "").toString().trim();
+  if (!raw) return "";
+
+  try {
+    const parsed = new URL(raw);
+    if (!parsed.pathname.startsWith("/media/")) {
+      return raw;
+    }
+
+    const encodedName = parsed.pathname.replace(/^\/media\//, "");
+    const filename = safeBasename(decodeURIComponent(encodedName));
+    if (!filename) {
+      return "";
+    }
+    const localPath = path.join(UPLOADS_DIR, filename);
+    if (!fs.existsSync(localPath)) {
+      return "";
+    }
+    return getPublicMediaUrl(req, filename);
+  } catch (error) {
+    return raw;
+  }
+}
+
 async function generateCoverPageMediaUrl({
   req,
   cfg,
@@ -4542,6 +4567,147 @@ app.get("/api/faxes/archive", requireAdmin, (req, res) => {
     Object.values(archive.items || {}).filter((item) => normalizeTenantId(item.tenant_id) === tenantId)
   ).slice(0, limit);
   return res.json({ items, updated_at: archive.updated_at, limit });
+});
+
+app.post("/api/faxes/:id/retry", async (req, res) => {
+  try {
+    const tenantId = normalizeTenantId(req.tenant_id);
+    const originalFax = getFaxById(req.params.id);
+    if (!originalFax || normalizeTenantId(originalFax.tenant_id) !== tenantId) {
+      return res.status(404).json({ error: "Fax not found for tenant." });
+    }
+
+    const direction = (originalFax.direction || "").toString().trim().toLowerCase();
+    if (!(direction === "outbound" || direction.includes("outbound"))) {
+      return res.status(400).json({ error: "Only outbound faxes can be retried." });
+    }
+
+    const status = (originalFax.status || "").toString().trim().toLowerCase();
+    if (status !== "failed") {
+      return res.status(400).json({ error: "Retry is only available for failed faxes." });
+    }
+
+    const cfg = requireConfig(res, tenantId);
+    if (!cfg) {
+      return;
+    }
+
+    const to = normalizeE164(originalFax.to || "");
+    if (!isE164(to)) {
+      return res.status(400).json({ error: "Original destination number is not valid E.164." });
+    }
+
+    const sourceMediaUrls =
+      Array.isArray(originalFax.media_urls) && originalFax.media_urls.length
+        ? originalFax.media_urls
+        : parseMediaUrlsInput(originalFax.media_url || "");
+    if (!sourceMediaUrls.length) {
+      return res.status(400).json({ error: "No original media URLs found for retry." });
+    }
+
+    const remintedMediaUrls = sourceMediaUrls
+      .map((url) => remintMediaUrlForRetry(req, url))
+      .filter(Boolean);
+    if (remintedMediaUrls.length !== sourceMediaUrls.length) {
+      return res.status(400).json({
+        error:
+          "Original uploaded files are no longer available for retry. Re-attach files and send a new fax."
+      });
+    }
+    const invalidMediaUrl = remintedMediaUrls.find((url) => !isHttpsMediaUrl(url));
+    if (invalidMediaUrl) {
+      return res.status(400).json({
+        error: `Stored media URL is invalid for retry: ${invalidMediaUrl}`
+      });
+    }
+
+    const requestedBy = req.session.user?.username || "unknown";
+    const fax = await telnyxSendFax({
+      apiKey: cfg.telnyx_api_key,
+      connectionId: cfg.telnyx_connection_id,
+      from: cfg.telnyx_from_number,
+      to,
+      mediaUrls: remintedMediaUrls
+    });
+
+    upsertFax(
+      fax.id,
+      {
+        id: fax.id,
+        direction: fax.direction,
+        status: fax.status,
+        from: fax.from,
+        to: fax.to,
+        media_url: Array.isArray(fax.media_url) ? fax.media_url.join("\n") : fax.media_url,
+        media_urls: remintedMediaUrls,
+        include_cover_page: originalFax.include_cover_page === true,
+        cover_subject: originalFax.cover_subject || "Fax Transmission",
+        cover_message: originalFax.cover_message || "",
+        failure_reason: null,
+        retry_of_fax_id: originalFax.id,
+        requested_by: requestedBy,
+        telnyx_updated_at: fax.updated_at,
+        created_at: fax.created_at
+      },
+      tenantId
+    );
+    upsertFax(
+      originalFax.id,
+      {
+        last_manual_retry_at: new Date().toISOString(),
+        last_manual_retry_fax_id: fax.id
+      },
+      tenantId
+    );
+    appendEvent(
+      fax.id,
+      "fax.manual_retry.queued",
+      {
+        retry_of_fax_id: originalFax.id,
+        requested_by: requestedBy
+      },
+      tenantId
+    );
+
+    let copyResult = { sent: false, reason: "not_attempted" };
+    try {
+      copyResult = await sendOutboundCopyEmail({
+        cfg,
+        fax,
+        mediaUrl: remintedMediaUrls[0],
+        mediaUrls: remintedMediaUrls,
+        requestedBy,
+        bulkJobId: null
+      });
+    } catch (copyError) {
+      copyResult = { sent: false, reason: copyError.message || "copy_email_failed" };
+    }
+
+    appendAuditEvent({
+      tenantId,
+      actorUsername: requestedBy,
+      actorRole: req.session.user?.role || "user",
+      action: "fax.retry.queued",
+      targetType: "fax",
+      targetId: fax.id,
+      ipAddress: getAuthClientIp(req),
+      metadata: {
+        retry_of_fax_id: originalFax.id,
+        copy_email_sent: copyResult.sent,
+        copy_email_reason: copyResult.reason
+      }
+    });
+
+    return res.status(202).json({
+      fax_id: fax.id,
+      retry_of_fax_id: originalFax.id,
+      status: fax.status,
+      copy_email_sent: copyResult.sent,
+      copy_email_reason: copyResult.reason
+    });
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Could not retry fax." });
+  }
 });
 
 app.post("/api/faxes", async (req, res) => {

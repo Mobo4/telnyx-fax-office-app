@@ -47,6 +47,7 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - Google auth: `/api/auth/google/config`, `/api/auth/google/start`, `/api/auth/google/callback`
 - Google link flow (authenticated): `/api/auth/google/link/start`
 - Send/history: `/api/faxes`, `/api/faxes/:id/refresh`
+- Manual resend: `/api/faxes/:id/retry`
 - Uploads: `/api/uploads/batch`
 - Contacts: `/api/contacts`, `/api/contacts/import`, `/api/contacts/tags`, `/api/contacts/frequent`
 - Bulk: `/api/faxes/bulk`, `/api/faxes/bulk-jobs`
@@ -71,6 +72,21 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 6. Backend queues one fax per recipient.
 7. Frontend reloads history and opens confirmation modal with queue details.
 8. Send form is cleared only when user confirms (OK) on the queue confirmation popup.
+
+## Manual Retry Workflow (failed faxes)
+1. In Sent History, failed outbound rows show `Retry` next to `Poll`.
+2. Clicking `Retry` calls `POST /api/faxes/:id/retry`.
+3. Backend validates:
+   - fax belongs to active tenant
+   - direction is outbound
+   - status is failed
+   - recipient remains valid E.164
+   - original media URLs are still available
+4. For local uploaded files (`/media/...`), backend remints fresh signed URLs before resending.
+5. On success, a new fax is queued and returned (`fax_id`), and history records retry lineage:
+   - new fax has `retry_of_fax_id`
+   - old fax gets `last_manual_retry_fax_id`
+6. If original uploaded files were already cleaned up, retry returns an explicit error asking user to re-attach and send a new fax.
 
 ## Recipient Behavior
 - Input accepts:

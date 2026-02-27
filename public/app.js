@@ -775,6 +775,12 @@ function applyAppSettingsToSendForm() {
 }
 
 function renderFaxRow(item) {
+  const canRetry =
+    faxDirectionBucket(item) === "sent" &&
+    (item.status || "").toString().trim().toLowerCase() === "failed";
+  const retryButton = canRetry
+    ? `<button class="small-btn secondary" data-retry-id="${escapeHtml(item.id)}">Retry</button>`
+    : "";
   const mediaLinks = mediaUrlsFromFaxItem(item)
     .map(
       (url, index) =>
@@ -791,10 +797,14 @@ function renderFaxRow(item) {
     <td><span class="${statusClass(item.status)}">${escapeHtml(item.status || "unknown")}</span></td>
     <td>${escapeHtml(formatDate(item.telnyx_updated_at || item.updated_at))}</td>
     <td>${escapeHtml(item.failure_reason || "-")}</td>
-    <td><button class="small-btn" data-id="${escapeHtml(item.id)}">Poll</button></td>
+    <td class="row-actions">
+      <button class="small-btn" data-id="${escapeHtml(item.id)}">Poll</button>
+      ${retryButton}
+    </td>
   `;
 
-  tr.querySelector("button[data-id]").addEventListener("click", async (event) => {
+  const pollButton = tr.querySelector("button[data-id]");
+  pollButton.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     button.disabled = true;
     try {
@@ -806,6 +816,26 @@ function renderFaxRow(item) {
       button.disabled = false;
     }
   });
+
+  const retryNode = tr.querySelector("button[data-retry-id]");
+  if (retryNode) {
+    retryNode.addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      button.disabled = true;
+      pollButton.disabled = true;
+      try {
+        const body = await api(`/api/faxes/${encodeURIComponent(item.id)}/retry`, { method: "POST" });
+        const newFaxId = body?.fax_id ? ` New Fax ID: ${body.fax_id}.` : "";
+        setMessage(sendMessage, `Retry queued successfully.${newFaxId}`);
+        await loadFaxes();
+      } catch (error) {
+        setMessage(sendMessage, error.message || "Retry failed.");
+      } finally {
+        button.disabled = false;
+        pollButton.disabled = false;
+      }
+    });
+  }
 
   return tr;
 }

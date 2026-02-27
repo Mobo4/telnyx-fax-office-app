@@ -95,6 +95,9 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Older records are archived for retention and can be retrieved by admin.
 - History endpoint must not hang UI when Telnyx API is slow/unreachable.
 - On sync failure, history still loads from local/archived data with warning message.
+- Failed outbound rows include a `Retry` button next to `Poll`.
+- Retry must queue a new outbound fax using stored recipient/media context and return the new fax ID.
+- Retry must fail safely with actionable error if original uploaded files are no longer available.
 
 ### Contacts and Address Book
 - Contact CRUD + CSV import.
@@ -108,6 +111,7 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Uploaded files are not directly public static assets; use signed expiring media links.
 - Telnyx webhook payloads should be signature-verified when key is configured.
 - `/api/faxes/:id/refresh` only refreshes fax IDs already owned by active tenant.
+- `/api/faxes/:id/retry` only retries failed outbound faxes owned by active tenant.
 - Tenant settings are isolated in tenant-scoped config storage (no global key bleed).
 
 ### Deployment and Availability
@@ -154,6 +158,7 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Google users cannot access admin settings unless role is `admin`.
 - Non-admin users cannot access settings even if authenticated via Google.
 - Existing local accounts can link Google identity and keep the same username/role.
+- Retrying a failed fax from history queues a new fax ID and records retry lineage (`retry_of_fax_id`).
 
 ## Gaps Reviewed and Resolved
 - Gap: send failures were not obvious enough.
