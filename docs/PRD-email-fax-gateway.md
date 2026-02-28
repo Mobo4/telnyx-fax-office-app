@@ -2,8 +2,22 @@
 
 ## Version
 - Date: 2026-02-27
-- Status: Planning approved for implementation
+- Status: Phase A/B baseline implemented; Phase C/D/E pending
 - Scope: Add production-grade inbound fax delivery to email and outbound fax submission from email
+
+## Implementation Status
+- Implemented:
+  - `POST /api/email/inbound` (token-gated)
+  - sender allowlist enforcement (emails + domains)
+  - subject parsing (`FAX TO:`), attachment intake, queue integration
+  - message-id dedupe and replay-safe response
+  - admin APIs for gateway config + request log
+  - admin UI settings card for gateway controls
+  - optional sender response email and inbound fax notification email
+- Pending:
+  - provider-native signature verification (Mailgun/SendGrid)
+  - richer admin request log UI table
+  - replay control endpoint and deeper compliance hardening
 
 ## Current State
 - `Fax-to-email` is partially available today through Telnyx fax app setting `fax_email_recipient` (provider-side).

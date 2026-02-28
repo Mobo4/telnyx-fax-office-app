@@ -14,6 +14,8 @@ Browser-based fax app for office use. It includes:
 - Admin controls for user accounts and Telnyx fax app settings
 - Admin billing panel with Stripe checkout and Stripe portal cancel/manage flow
 - Admin dashboard with usage, overage estimate, and fax operations summary
+- Email-to-fax gateway webhook (sender allowlist + message-id dedupe)
+- Optional inbound fax notification emails
 - Settings panel opened from a gear button (admin only)
 - Inline file attach on Send Fax page (no popup)
 - Per-user memory of the last media URL used
@@ -78,6 +80,8 @@ Set:
   - `GOOGLE_AUTH_DEFAULT_ROLE` (`user` or `admin` for auto-created Google users)
   - `GOOGLE_AUTH_ALLOWED_DOMAINS` (optional comma-separated email domains)
   - `GOOGLE_OAUTH_STATE_MAX_AGE_MS` (default `600000`)
+- Email gateway:
+  - `EMAIL_GATEWAY_WEBHOOK_TOKEN` (required; used by `/api/email/inbound` header `x-email-gateway-token`)
 - Commercial mode:
   - `MULTI_TENANT_ENABLED` (default `true`)
   - `DEFAULT_TENANT_ID` (default `default`)
@@ -172,6 +176,7 @@ Point your Fax App webhook to:
 This app also accepts:
 
 - `POST /api/webhooks/telnyx`
+- `POST /api/email/inbound` (email-to-fax webhook)
 
 For paid billing mode (`BILLING_MODE=paid`), Stripe webhook endpoint:
 
@@ -181,6 +186,19 @@ Webhook hardening:
 
 - Set `TELNYX_WEBHOOK_PUBLIC_KEY` to the signing key from Telnyx portal.
 - Keep `WEBHOOK_SIGNATURE_REQUIRED=true` in production.
+- Set and require `EMAIL_GATEWAY_WEBHOOK_TOKEN` for email webhook authentication.
+
+### 5.1 Email-to-fax gateway format
+
+- Subject must include destination:
+  - `FAX TO: +17145551234`
+  - multiple: `FAX TO: +17145551234,+17145557654`
+- Optional body commands:
+  - `COVER_SUBJECT: Referral Packet`
+  - `COVER_MESSAGE: Please review attached records.`
+  - `INCLUDE_COVER_PAGE: true|false`
+- Attachments:
+  - PDF/TIFF only, max 5 items
 
 ## 6. How verification works
 

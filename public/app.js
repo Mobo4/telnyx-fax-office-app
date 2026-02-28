@@ -71,6 +71,10 @@ const settingsMessage = document.getElementById("settings-message");
 const faxAppForm = document.getElementById("fax-app-form");
 const faxAppMessage = document.getElementById("fax-app-message");
 const loadFaxAppBtn = document.getElementById("load-fax-app");
+const emailGatewayForm = document.getElementById("email-gateway-form");
+const emailGatewayMessage = document.getElementById("email-gateway-message");
+const emailGatewayEndpoint = document.getElementById("email-gateway-endpoint");
+const emailGatewayTokenState = document.getElementById("email-gateway-token-state");
 const billingForm = document.getElementById("billing-form");
 const billingPlanSelect = document.getElementById("billing_plan_select");
 const billingCheckoutBtn = document.getElementById("billing_checkout_btn");
@@ -146,6 +150,9 @@ let state = {
   dashboard: {
     loaded: false
   },
+  emailGateway: {
+    loaded: false
+  },
   appSettings: {
     outbound_copy_enabled: true,
     outbound_copy_email: "eyecarecenteroc@gmail.com",
@@ -196,6 +203,22 @@ function parseTagsInput(value) {
         .filter(Boolean)
     )
   );
+}
+
+function parseListInput(value) {
+  return Array.from(
+    new Set(
+      (value || "")
+        .toString()
+        .split(/[\n,;]+/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+function listToTextarea(value) {
+  return Array.isArray(value) ? value.filter(Boolean).join("\n") : "";
 }
 
 function parseMediaUrls(value) {
@@ -1253,6 +1276,29 @@ async function loadFaxAppSettings() {
     body.outbound_channel_limit === null ? "" : String(body.outbound_channel_limit);
 }
 
+async function loadEmailGatewaySettings() {
+  const body = await api("/api/admin/email-gateway");
+  state.emailGateway.loaded = true;
+  document.getElementById("email_gateway_enabled").checked = body.enabled === true;
+  document.getElementById("email_gateway_address").value = body.gateway_address || "";
+  document.getElementById("email_gateway_provider").value = body.provider || "generic";
+  document.getElementById("email_gateway_enforce_allowlist").checked = body.enforce_allowlist !== false;
+  document.getElementById("email_gateway_allowed_senders").value = listToTextarea(body.allowed_senders);
+  document.getElementById("email_gateway_allowed_domains").value = listToTextarea(body.allowed_domains);
+  document.getElementById("email_gateway_default_cover").checked = body.default_include_cover_page !== false;
+  document.getElementById("email_gateway_notify_sender").checked = body.notify_sender !== false;
+  document.getElementById("email_gateway_inbound_notify_enabled").checked = body.inbound_notification_enabled === true;
+  document.getElementById("email_gateway_inbound_recipients").value = listToTextarea(body.inbound_notification_recipients);
+  if (emailGatewayEndpoint) {
+    emailGatewayEndpoint.textContent = `Inbound endpoint: ${body.inbound_endpoint || "/api/email/inbound"} (header: ${body.auth_header || "x-email-gateway-token"})`;
+  }
+  if (emailGatewayTokenState) {
+    emailGatewayTokenState.textContent = body.webhook_token_configured
+      ? "Webhook token is configured."
+      : "Webhook token is not configured yet.";
+  }
+}
+
 function applyBillingUiState() {
   const stripeEnabled = state.billing?.stripeEnabled === true;
   if (billingCheckoutBtn) {
@@ -1435,6 +1481,7 @@ async function initAfterLogin() {
     const adminLoaders = [
       { label: "dashboard", run: () => loadAdminDashboard() },
       { label: "admin settings", run: () => loadAdminSettings() },
+      { label: "email gateway", run: () => loadEmailGatewaySettings() },
       { label: "users", run: () => loadUsers() },
       { label: "billing", run: () => loadBillingSettings() }
     ];
@@ -1935,6 +1982,43 @@ faxAppForm.addEventListener("submit", async (event) => {
     setMessage(faxAppMessage, error.message);
   }
 });
+
+if (emailGatewayForm) {
+  emailGatewayForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    setMessage(emailGatewayMessage, "");
+    const formData = new FormData(emailGatewayForm);
+    const payload = {
+      enabled: document.getElementById("email_gateway_enabled").checked,
+      gateway_address: (formData.get("gateway_address") || "").toString().trim().toLowerCase(),
+      provider: (formData.get("provider") || "").toString().trim().toLowerCase(),
+      enforce_allowlist: document.getElementById("email_gateway_enforce_allowlist").checked,
+      allowed_senders: parseListInput(formData.get("allowed_senders") || ""),
+      allowed_domains: parseListInput(formData.get("allowed_domains") || ""),
+      default_include_cover_page: document.getElementById("email_gateway_default_cover").checked,
+      notify_sender: document.getElementById("email_gateway_notify_sender").checked,
+      inbound_notification_enabled: document.getElementById("email_gateway_inbound_notify_enabled").checked,
+      inbound_notification_recipients: parseListInput(formData.get("inbound_notification_recipients") || "")
+    };
+    const token = (formData.get("webhook_token") || "").toString().trim();
+    if (token) {
+      payload.webhook_token = token;
+    }
+
+    try {
+      await api("/api/admin/email-gateway", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      document.getElementById("email_gateway_webhook_token").value = "";
+      setMessage(emailGatewayMessage, "Email gateway settings saved.");
+      await loadEmailGatewaySettings();
+    } catch (error) {
+      setMessage(emailGatewayMessage, error.message || "Could not save email gateway settings.");
+    }
+  });
+}
 
 if (billingForm) {
   billingForm.addEventListener("submit", (event) => {

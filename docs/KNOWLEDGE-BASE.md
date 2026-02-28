@@ -37,7 +37,8 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - Admin settings hard-gated to admin role in UI and API (`403` on admin routes for non-admin).
 - Admin billing controls for Stripe checkout and Stripe customer portal (cancel/manage).
 - Provider-side inbound fax email recipient supported through Telnyx fax app configuration.
-- Full email-to-fax gateway is planned (see `PRD-email-fax-gateway.md`).
+- Email-to-fax gateway webhook is now implemented (tenant-configurable, token gated, sender allowlist).
+- Optional app-level inbound fax notification emails are supported per tenant.
 - Login throttling and account lockout after repeated failures.
 - Signed expiring media links for outbound fax document retrieval.
 - Background worker loop for queued bulk fax recovery.
@@ -59,6 +60,10 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - Retry internals: busy retry queue worker (server-side only, webhook-driven)
 - Admin: `/api/admin/settings`, `/api/admin/telnyx/fax-application`, `/api/admin/users`
 - Admin dashboard: `/api/admin/dashboard`
+- Email gateway:
+  - `/api/admin/email-gateway`
+  - `/api/admin/email-requests`
+  - `/api/email/inbound` (open route; token required)
 - Archive: `/api/faxes/archive` (admin-only)
 - Health: `/api/health` (includes hosting/storage diagnostics)
 - Media: `/media/:filename?exp=...&sig=...` (signed public fetch URL for Telnyx media retrieval)
@@ -81,6 +86,19 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 6. Backend queues one fax per recipient.
 7. Frontend reloads history and opens confirmation modal with queue details.
 8. Send form is cleared only when user confirms (OK) on the queue confirmation popup.
+
+## Email-to-Fax Workflow (current)
+1. Admin enables gateway in `Email Gateway` settings card.
+2. Provider posts inbound email payload to `POST /api/email/inbound` with `x-email-gateway-token`.
+3. Server validates:
+   - tenant
+   - webhook token
+   - sender allowlist policy
+   - subject recipient format (`FAX TO: +E164`)
+   - attachment type/count and media URL reachability
+4. Faxes are queued via Telnyx (one fax per recipient).
+5. Request is stored with message-id dedupe metadata.
+6. Optional sender response email is sent via SMTP.
 
 ## Manual Retry Workflow (failed faxes)
 1. In Sent History, failed outbound rows show `Retry` next to `Poll`.
@@ -132,6 +150,8 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - `/Users/alex/Documents/Projects/Telnyx/data/contacts.json`
 - `/Users/alex/Documents/Projects/Telnyx/data/bulk_jobs.json`
 - `/Users/alex/Documents/Projects/Telnyx/data/fax_retry_queue.json`
+- `/Users/alex/Documents/Projects/Telnyx/data/email_gateway_config.json`
+- `/Users/alex/Documents/Projects/Telnyx/data/email_requests.json`
 - `/Users/alex/Documents/Projects/Telnyx/data/config.json`
 - `/Users/alex/Documents/Projects/Telnyx/data/users.json`
 

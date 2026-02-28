@@ -39,6 +39,8 @@ const AUDIT_EVENTS_FILE = path.join(DATA_DIR, "audit_events.json");
 const IDEMPOTENCY_FILE = path.join(DATA_DIR, "idempotency_keys.json");
 const BILLING_FILE = path.join(DATA_DIR, "billing.json");
 const USAGE_FILE = path.join(DATA_DIR, "usage_metrics.json");
+const EMAIL_GATEWAY_FILE = path.join(DATA_DIR, "email_gateway_config.json");
+const EMAIL_REQUESTS_FILE = path.join(DATA_DIR, "email_requests.json");
 const UPLOADS_DIR = path.join(DATA_DIR, "uploads");
 const MAX_CONTACTS = 3000;
 const MAX_SEND_RECIPIENTS = 100;
@@ -168,6 +170,7 @@ const STRIPE_SUCCESS_URL = (process.env.STRIPE_SUCCESS_URL || "").trim();
 const STRIPE_CANCEL_URL = (process.env.STRIPE_CANCEL_URL || "").trim();
 const STRIPE_PORTAL_RETURN_URL = (process.env.STRIPE_PORTAL_RETURN_URL || "").trim();
 const STRIPE_ENABLED = BILLING_MODE === "paid" && Boolean(STRIPE_SECRET_KEY);
+const EMAIL_GATEWAY_WEBHOOK_TOKEN = (process.env.EMAIL_GATEWAY_WEBHOOK_TOKEN || "").trim();
 const STRIPE_PRICE_BY_PLAN = {
   starter: STRIPE_PRICE_STARTER_MONTHLY,
   pro: STRIPE_PRICE_PRO_MONTHLY,
@@ -1041,6 +1044,18 @@ function ensureDataFiles() {
       }
     });
   }
+  if (!fs.existsSync(EMAIL_GATEWAY_FILE)) {
+    writeJson(EMAIL_GATEWAY_FILE, {
+      updated_at: new Date().toISOString(),
+      tenants: {}
+    });
+  }
+  if (!fs.existsSync(EMAIL_REQUESTS_FILE)) {
+    writeJson(EMAIL_REQUESTS_FILE, {
+      updated_at: new Date().toISOString(),
+      items: {}
+    });
+  }
   const tenants = readTenantsStore();
   if (!tenants.items?.[DEFAULT_TENANT_ID]) {
     tenants.items = tenants.items || {};
@@ -1753,6 +1768,303 @@ function writeConfig(config, tenantId = DEFAULT_TENANT_ID) {
     tenants,
     migrated_at: now
   });
+}
+
+function normalizeEmailListInput(input) {
+  if (Array.isArray(input)) {
+    return Array.from(
+      new Set(
+        input
+          .map((item) => (item || "").toString().trim().toLowerCase())
+          .filter((item) => isEmail(item))
+      )
+    );
+  }
+  return Array.from(
+    new Set(
+      (input || "")
+        .toString()
+        .split(/[\n,;]+/)
+        .map((item) => item.trim().toLowerCase())
+        .filter((item) => isEmail(item))
+    )
+  );
+}
+
+function normalizeDomainListInput(input) {
+  const values = Array.isArray(input)
+    ? input
+    : (input || "")
+        .toString()
+        .split(/[\n,;]+/);
+  return Array.from(
+    new Set(
+      values
+        .map((item) => item.toString().trim().toLowerCase())
+        .map((item) => item.replace(/^@+/, ""))
+        .filter((item) => /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(item))
+    )
+  );
+}
+
+function defaultEmailGatewayConfig(tenantId = DEFAULT_TENANT_ID) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const gatewayLocal = normalizedTenantId === DEFAULT_TENANT_ID ? "fax" : `fax+${normalizedTenantId}`;
+  return {
+    tenant_id: normalizedTenantId,
+    enabled: false,
+    provider: "generic",
+    gateway_address: `${gatewayLocal}@refract.ing`,
+    enforce_allowlist: true,
+    allowed_senders: [],
+    allowed_domains: [],
+    default_include_cover_page: true,
+    notify_sender: true,
+    inbound_notification_enabled: false,
+    inbound_notification_recipients: [],
+    webhook_token: EMAIL_GATEWAY_WEBHOOK_TOKEN || "",
+    updated_at: new Date().toISOString()
+  };
+}
+
+function readEmailGatewayConfigStore() {
+  const raw = readJson(EMAIL_GATEWAY_FILE, { updated_at: new Date().toISOString(), tenants: {} });
+  const tenants = raw?.tenants && typeof raw.tenants === "object" ? { ...raw.tenants } : {};
+  return {
+    updated_at: raw?.updated_at || new Date().toISOString(),
+    tenants
+  };
+}
+
+function readEmailGatewayConfig(tenantId = DEFAULT_TENANT_ID) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const store = readEmailGatewayConfigStore();
+  const tenantConfig = store.tenants[normalizedTenantId] || {};
+  const merged = {
+    ...defaultEmailGatewayConfig(normalizedTenantId),
+    ...tenantConfig,
+    tenant_id: normalizedTenantId
+  };
+  merged.allowed_senders = normalizeEmailListInput(merged.allowed_senders);
+  merged.allowed_domains = normalizeDomainListInput(merged.allowed_domains);
+  merged.inbound_notification_recipients = normalizeEmailListInput(merged.inbound_notification_recipients);
+  return merged;
+}
+
+function writeEmailGatewayConfig(config, tenantId = DEFAULT_TENANT_ID) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const store = readEmailGatewayConfigStore();
+  const existing = readEmailGatewayConfig(normalizedTenantId);
+  const now = new Date().toISOString();
+  const incomingToken = config.webhook_token === undefined ? undefined : (config.webhook_token || "").toString().trim();
+  const next = {
+    ...existing,
+    ...config,
+    tenant_id: normalizedTenantId,
+    enabled: config.enabled === undefined ? existing.enabled : Boolean(config.enabled),
+    enforce_allowlist:
+      config.enforce_allowlist === undefined ? existing.enforce_allowlist : Boolean(config.enforce_allowlist),
+    default_include_cover_page:
+      config.default_include_cover_page === undefined
+        ? existing.default_include_cover_page
+        : Boolean(config.default_include_cover_page),
+    notify_sender: config.notify_sender === undefined ? existing.notify_sender : Boolean(config.notify_sender),
+    inbound_notification_enabled:
+      config.inbound_notification_enabled === undefined
+        ? existing.inbound_notification_enabled
+        : Boolean(config.inbound_notification_enabled),
+    provider: (config.provider || existing.provider || "generic").toString().trim().toLowerCase() || "generic",
+    gateway_address: (config.gateway_address || existing.gateway_address || "").toString().trim().toLowerCase(),
+    allowed_senders: normalizeEmailListInput(config.allowed_senders ?? existing.allowed_senders),
+    allowed_domains: normalizeDomainListInput(config.allowed_domains ?? existing.allowed_domains),
+    inbound_notification_recipients: normalizeEmailListInput(
+      config.inbound_notification_recipients ?? existing.inbound_notification_recipients
+    ),
+    webhook_token:
+      incomingToken === undefined
+        ? existing.webhook_token || EMAIL_GATEWAY_WEBHOOK_TOKEN || ""
+        : incomingToken
+          ? incomingToken
+          : existing.webhook_token || EMAIL_GATEWAY_WEBHOOK_TOKEN || "",
+    updated_at: now
+  };
+
+  store.tenants[normalizedTenantId] = next;
+  writeJson(EMAIL_GATEWAY_FILE, {
+    updated_at: now,
+    tenants: store.tenants
+  });
+  return next;
+}
+
+function sanitizeEmailGatewayConfigForApi(config) {
+  return {
+    tenant_id: config.tenant_id,
+    enabled: config.enabled === true,
+    provider: config.provider || "generic",
+    gateway_address: config.gateway_address || "",
+    enforce_allowlist: config.enforce_allowlist !== false,
+    allowed_senders: normalizeEmailListInput(config.allowed_senders),
+    allowed_domains: normalizeDomainListInput(config.allowed_domains),
+    default_include_cover_page: config.default_include_cover_page !== false,
+    notify_sender: config.notify_sender !== false,
+    inbound_notification_enabled: config.inbound_notification_enabled === true,
+    inbound_notification_recipients: normalizeEmailListInput(config.inbound_notification_recipients),
+    webhook_token_configured: Boolean((config.webhook_token || "").toString().trim() || EMAIL_GATEWAY_WEBHOOK_TOKEN)
+  };
+}
+
+function readEmailRequestsStore() {
+  return readJson(EMAIL_REQUESTS_FILE, { updated_at: new Date().toISOString(), items: {} });
+}
+
+function writeEmailRequestsStore(store) {
+  writeJson(EMAIL_REQUESTS_FILE, {
+    ...store,
+    updated_at: new Date().toISOString()
+  });
+}
+
+function normalizeEmailMessageId(value) {
+  return (value || "").toString().trim().toLowerCase();
+}
+
+function getEmailRequestByMessageId(messageId, tenantId = DEFAULT_TENANT_ID) {
+  const normalizedMessageId = normalizeEmailMessageId(messageId);
+  if (!normalizedMessageId) return null;
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const store = readEmailRequestsStore();
+  return (
+    Object.values(store.items || {}).find(
+      (item) =>
+        normalizeTenantId(item.tenant_id) === normalizedTenantId &&
+        normalizeEmailMessageId(item.message_id) === normalizedMessageId
+    ) || null
+  );
+}
+
+function upsertEmailRequest(requestId, patch = {}, tenantId = DEFAULT_TENANT_ID) {
+  const normalizedTenantId = normalizeTenantId(tenantId);
+  const store = readEmailRequestsStore();
+  const existing = store.items[requestId] || {
+    id: requestId,
+    tenant_id: normalizedTenantId,
+    created_at: new Date().toISOString()
+  };
+  const next = {
+    ...existing,
+    ...patch,
+    tenant_id: normalizedTenantId,
+    updated_at: new Date().toISOString()
+  };
+  store.items[requestId] = next;
+  writeEmailRequestsStore(store);
+  return next;
+}
+
+function extractEmailAddress(value) {
+  const raw = (value || "").toString().trim().toLowerCase();
+  if (!raw) return "";
+  const match = raw.match(/<([^>]+)>/);
+  const candidate = match ? match[1].trim() : raw;
+  return isEmail(candidate) ? candidate : "";
+}
+
+function parseEmailToFaxSubjectRecipients(subject) {
+  const raw = (subject || "").toString();
+  const match = raw.match(/fax\s*to\s*:\s*(.+)$/i);
+  if (!match) return [];
+  return parseRecipientNumbersInput(match[1]);
+}
+
+function parseEmailCommandField(text, key) {
+  const body = (text || "").toString();
+  const regex = new RegExp(`^\\s*${key}\\s*:\\s*(.+)$`, "im");
+  const match = body.match(regex);
+  return match ? match[1].toString().trim() : "";
+}
+
+function parseBooleanLike(value, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const normalized = value.toString().trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
+function extractTenantFromGatewayAddress(value) {
+  const email = extractEmailAddress(value);
+  if (!email) return "";
+  const local = email.split("@")[0] || "";
+  if (!local) return "";
+  if (local === "fax") return DEFAULT_TENANT_ID;
+  if (local.startsWith("fax+")) {
+    return normalizeTenantId(local.slice(4));
+  }
+  return "";
+}
+
+function isAllowedEmailGatewaySender({ senderEmail, gatewayConfig }) {
+  const sender = extractEmailAddress(senderEmail);
+  if (!sender) {
+    return false;
+  }
+  if (!gatewayConfig.enforce_allowlist) {
+    return true;
+  }
+  const allowedSenders = normalizeEmailListInput(gatewayConfig.allowed_senders);
+  const allowedDomains = normalizeDomainListInput(gatewayConfig.allowed_domains);
+  if (allowedSenders.includes(sender)) {
+    return true;
+  }
+  const senderDomain = sender.split("@")[1] || "";
+  if (senderDomain && allowedDomains.includes(senderDomain)) {
+    return true;
+  }
+  return false;
+}
+
+function parseEmailInboundAttachments(body = {}) {
+  const attachments = [];
+  if (Array.isArray(body.attachments)) {
+    body.attachments.forEach((item, index) => {
+      if (!item || typeof item !== "object") return;
+      attachments.push({
+        filename: (item.filename || item.name || `attachment-${index + 1}.pdf`).toString().trim(),
+        content_type: (item.content_type || item.contentType || "").toString().trim().toLowerCase(),
+        media_url: (item.media_url || item.url || "").toString().trim(),
+        content_base64: (item.content_base64 || "").toString().trim()
+      });
+    });
+  }
+
+  Object.keys(body || {}).forEach((key) => {
+    const match = key.match(/^attachment-url-(\d+)$/i);
+    if (!match) return;
+    const idx = Number(match[1]);
+    const mediaUrl = (body[key] || "").toString().trim();
+    if (!mediaUrl) return;
+    attachments.push({
+      filename: (body[`attachment-name-${idx}`] || `attachment-${idx}.pdf`).toString().trim(),
+      content_type: (body[`attachment-content-type-${idx}`] || "").toString().trim().toLowerCase(),
+      media_url: mediaUrl,
+      content_base64: ""
+    });
+  });
+
+  return attachments;
+}
+
+function isSupportedFaxAttachment({ filename = "", contentType = "" }) {
+  const ext = path.extname(filename || "").toLowerCase();
+  const mime = (contentType || "").toLowerCase();
+  if ([".pdf", ".tif", ".tiff"].includes(ext)) {
+    return true;
+  }
+  if (["application/pdf", "image/tiff", "application/tiff", "application/octet-stream"].includes(mime)) {
+    return true;
+  }
+  return false;
 }
 
 function readContactsStore() {
@@ -4044,6 +4356,49 @@ function localAttachmentsFromMediaUrls(mediaUrls) {
   );
 }
 
+function mediaUrlFromEmailAttachment(req, attachment = {}) {
+  const filename = safeBasename(attachment.filename || "");
+  const ext = path.extname(filename || "").toLowerCase();
+  const safeExt = [".pdf", ".tif", ".tiff"].includes(ext) ? ext : ".pdf";
+
+  if (attachment.media_url && isHttpsMediaUrl(attachment.media_url)) {
+    return attachment.media_url;
+  }
+
+  const contentBase64 = (attachment.content_base64 || "").toString().trim();
+  if (!contentBase64) {
+    return "";
+  }
+  let data = contentBase64;
+  const comma = data.indexOf(",");
+  if (data.startsWith("data:") && comma > -1) {
+    data = data.slice(comma + 1);
+  }
+  const buffer = Buffer.from(data, "base64");
+  if (!buffer.length) {
+    return "";
+  }
+  ensureUploadsDir();
+  const generatedName = `${Date.now()}-${crypto.randomBytes(8).toString("hex")}${safeExt}`;
+  const filePath = path.join(UPLOADS_DIR, generatedName);
+  fs.writeFileSync(filePath, buffer);
+  return getPublicMediaUrl(req, generatedName);
+}
+
+function emailInboundToMediaUrls(req, body = {}) {
+  const attachments = parseEmailInboundAttachments(body).slice(0, MAX_UPLOAD_BATCH_FILES);
+  const mediaUrls = [];
+  for (const attachment of attachments) {
+    if (!isSupportedFaxAttachment({ filename: attachment.filename, contentType: attachment.content_type })) {
+      continue;
+    }
+    const mediaUrl = mediaUrlFromEmailAttachment(req, attachment);
+    if (!mediaUrl) continue;
+    mediaUrls.push(mediaUrl);
+  }
+  return Array.from(new Set(mediaUrls));
+}
+
 function countPdfPagesFromBuffer(buffer) {
   if (!buffer || !buffer.length) return 1;
   const text = buffer.toString("latin1");
@@ -4283,6 +4638,100 @@ async function sendOutboundCopyEmail({
   return { sent: true, reason: "ok" };
 }
 
+async function sendEmailGatewayResultEmail({
+  cfg,
+  toEmail,
+  subjectLine = "",
+  requestId = "",
+  queuedCount = 0,
+  failedCount = 0,
+  faxIds = [],
+  errorText = ""
+}) {
+  const recipient = extractEmailAddress(toEmail);
+  if (!recipient || !isEmail(recipient)) {
+    return { sent: false, reason: "invalid_recipient" };
+  }
+  if (!cfg.smtp_host || !cfg.smtp_user || !cfg.smtp_pass || !cfg.smtp_from) {
+    return { sent: false, reason: "smtp_not_configured" };
+  }
+
+  const transporter = nodemailer.createTransport({
+    host: cfg.smtp_host,
+    port: cfg.smtp_port,
+    secure: cfg.smtp_secure,
+    auth: {
+      user: cfg.smtp_user,
+      pass: cfg.smtp_pass
+    }
+  });
+
+  const mailSubject = queuedCount > 0
+    ? `Fax request accepted (${queuedCount} queued)`
+    : "Fax request failed";
+  const lines = [
+    queuedCount > 0 ? "Your email-to-fax request was processed." : "Your email-to-fax request could not be processed.",
+    `Original Subject: ${subjectLine || "(none)"}`,
+    requestId ? `Request ID: ${requestId}` : null,
+    `Queued: ${queuedCount}`,
+    `Failed: ${failedCount}`,
+    faxIds.length ? `Fax ID(s): ${faxIds.join(", ")}` : null,
+    errorText ? `Error: ${errorText}` : null,
+    "",
+    "Phone format:",
+    "- Use E.164 format in subject, e.g. FAX TO: +17145551234"
+  ].filter(Boolean);
+
+  await transporter.sendMail({
+    from: cfg.smtp_from,
+    to: recipient,
+    subject: mailSubject,
+    text: lines.join("\n")
+  });
+  return { sent: true, reason: "ok" };
+}
+
+async function sendInboundFaxNotificationEmail({
+  cfg,
+  recipients = [],
+  fax = {},
+  tenantId = DEFAULT_TENANT_ID
+}) {
+  const targets = normalizeEmailListInput(recipients);
+  if (!targets.length) {
+    return { sent: false, reason: "no_recipients" };
+  }
+  if (!cfg.smtp_host || !cfg.smtp_user || !cfg.smtp_pass || !cfg.smtp_from) {
+    return { sent: false, reason: "smtp_not_configured" };
+  }
+  const transporter = nodemailer.createTransport({
+    host: cfg.smtp_host,
+    port: cfg.smtp_port,
+    secure: cfg.smtp_secure,
+    auth: {
+      user: cfg.smtp_user,
+      pass: cfg.smtp_pass
+    }
+  });
+  const lines = [
+    "Inbound fax received.",
+    `Tenant: ${tenantId}`,
+    `Fax ID: ${fax.id || "unknown"}`,
+    `From: ${fax.from || "unknown"}`,
+    `To: ${fax.to || "unknown"}`,
+    `Status: ${fax.status || "received"}`,
+    fax.billed_page_count ? `Pages: ${fax.billed_page_count}` : null,
+    `Received At: ${fax.updated_at || new Date().toISOString()}`
+  ].filter(Boolean);
+  await transporter.sendMail({
+    from: cfg.smtp_from,
+    to: targets.join(","),
+    subject: `Inbound fax received (${fax.id || "unknown"})`,
+    text: lines.join("\n")
+  });
+  return { sent: true, reason: "ok" };
+}
+
 async function sendFaxFailureAlertEmail({
   cfg,
   fax,
@@ -4414,6 +4863,7 @@ app.use("/api", (req, res, next) => {
     "/auth/logout",
     "/auth/me",
     "/public/signup",
+    "/email/inbound",
     "/auth/google/config",
     "/auth/google/start",
     "/auth/google/callback",
@@ -4602,6 +5052,298 @@ app.post("/api/public/signup", async (req, res) => {
   } catch (error) {
     return res.status(400).json({ error: error.message || "Could not create account." });
   }
+});
+
+app.post("/api/email/inbound", async (req, res) => {
+  const body = req.body || {};
+  const hintedTenantId = normalizeTenantId(
+    body.tenant_id ||
+      body.tenantId ||
+      extractTenantFromGatewayAddress(body.to || body.recipient || body.To || body.Recipient || "") ||
+      req.get("x-tenant-id") ||
+      DEFAULT_TENANT_ID
+  );
+  const tenant = getTenantById(hintedTenantId);
+  if (!tenant) {
+    return res.status(404).json({ error: "Tenant not found for email gateway." });
+  }
+
+  const gatewayConfig = readEmailGatewayConfig(hintedTenantId);
+  if (!gatewayConfig.enabled) {
+    return res.status(403).json({ error: "Email-to-fax gateway is disabled for this tenant." });
+  }
+
+  const expectedToken = (gatewayConfig.webhook_token || EMAIL_GATEWAY_WEBHOOK_TOKEN || "").toString().trim();
+  const providedToken = (
+    req.get("x-email-gateway-token") ||
+    req.query.token ||
+    body.webhook_token ||
+    ""
+  )
+    .toString()
+    .trim();
+  if (!expectedToken) {
+    return res.status(503).json({ error: "Email gateway webhook token is not configured." });
+  }
+  if (providedToken !== expectedToken) {
+    return res.status(401).json({ error: "Email gateway webhook token is invalid." });
+  }
+
+  const messageId = normalizeEmailMessageId(
+    body.message_id ||
+      body.messageId ||
+      body["message-id"] ||
+      body["Message-Id"] ||
+      req.get("message-id") ||
+      crypto.randomUUID()
+  );
+  const existing = getEmailRequestByMessageId(messageId, hintedTenantId);
+  if (existing) {
+    return res.status(200).json({
+      ok: true,
+      idempotent_replay: true,
+      request_id: existing.id,
+      queued_count: Number(existing.queued_count || 0),
+      failed_count: Number(existing.failed_count || 0),
+      fax_ids: Array.isArray(existing.fax_ids) ? existing.fax_ids : []
+    });
+  }
+
+  const senderEmail = extractEmailAddress(body.from_email || body.sender || body.from || body.From || "");
+  const subject = (body.subject || body.Subject || "").toString().trim();
+  const textBody = (body.text || body["body-plain"] || body.body || "").toString();
+  const requestId = crypto.randomUUID();
+  const baseRequestMeta = {
+    id: requestId,
+    tenant_id: hintedTenantId,
+    message_id: messageId,
+    sender_email: senderEmail,
+    subject,
+    received_at: new Date().toISOString()
+  };
+
+  if (!senderEmail || !isEmail(senderEmail)) {
+    upsertEmailRequest(requestId, { ...baseRequestMeta, status: "rejected", error: "invalid_sender_email" }, hintedTenantId);
+    return res.status(400).json({ error: "Valid sender email is required." });
+  }
+
+  if (!isAllowedEmailGatewaySender({ senderEmail, gatewayConfig })) {
+    upsertEmailRequest(
+      requestId,
+      { ...baseRequestMeta, status: "rejected", error: "sender_not_allowed" },
+      hintedTenantId
+    );
+    return res.status(403).json({ error: "Sender email is not allowed for this tenant gateway." });
+  }
+
+  const recipientTokensInput = body.to_numbers || body.to || parseEmailToFaxSubjectRecipients(subject);
+  const recipientTokens = parseRecipientTokensInput(recipientTokensInput);
+  const toNumbers = parseRecipientNumbersInput(recipientTokensInput);
+  if (!recipientTokens.length || !toNumbers.length) {
+    upsertEmailRequest(
+      requestId,
+      { ...baseRequestMeta, status: "rejected", error: "missing_recipients" },
+      hintedTenantId
+    );
+    return res.status(400).json({
+      error: "No fax recipients found. Use subject format: FAX TO: +17145551234"
+    });
+  }
+  const invalidNumber = recipientTokens.find((value) => !isE164(normalizeE164(value)));
+  if (invalidNumber) {
+    upsertEmailRequest(
+      requestId,
+      { ...baseRequestMeta, status: "rejected", error: `invalid_recipient:${invalidNumber}` },
+      hintedTenantId
+    );
+    return res.status(400).json({ error: `Invalid fax number in request: ${invalidNumber}` });
+  }
+
+  const mediaUrls = Array.from(
+    new Set([
+      ...emailInboundToMediaUrls(req, body),
+      ...parseMediaUrlsInput(body.media_urls || body.media_url || "")
+    ])
+  );
+  if (!mediaUrls.length) {
+    upsertEmailRequest(
+      requestId,
+      { ...baseRequestMeta, status: "rejected", error: "missing_attachments" },
+      hintedTenantId
+    );
+    return res.status(400).json({ error: "No valid PDF/TIFF attachments were found in email request." });
+  }
+  if (mediaUrls.length > MAX_UPLOAD_BATCH_FILES) {
+    upsertEmailRequest(
+      requestId,
+      { ...baseRequestMeta, status: "rejected", error: `too_many_attachments:${mediaUrls.length}` },
+      hintedTenantId
+    );
+    return res.status(400).json({ error: `Too many attachments. Maximum is ${MAX_UPLOAD_BATCH_FILES}.` });
+  }
+  const invalidMediaUrl = mediaUrls.find((url) => !isHttpsMediaUrl(url));
+  if (invalidMediaUrl) {
+    upsertEmailRequest(
+      requestId,
+      { ...baseRequestMeta, status: "rejected", error: `invalid_media_url:${invalidMediaUrl}` },
+      hintedTenantId
+    );
+    return res.status(400).json({ error: `Invalid attachment URL: ${invalidMediaUrl}` });
+  }
+
+  const cfg = requireConfig(res, hintedTenantId);
+  if (!cfg) {
+    upsertEmailRequest(
+      requestId,
+      { ...baseRequestMeta, status: "failed", error: "missing_telnyx_config" },
+      hintedTenantId
+    );
+    return;
+  }
+
+  const includeCoverPage = parseBooleanLike(
+    parseEmailCommandField(textBody, "INCLUDE_COVER_PAGE"),
+    gatewayConfig.default_include_cover_page !== false
+  );
+  const coverSubject = parseEmailCommandField(textBody, "COVER_SUBJECT") || subject || "Email-to-Fax";
+  const coverMessage = parseEmailCommandField(textBody, "COVER_MESSAGE") || "";
+
+  const faxIds = [];
+  const results = [];
+  for (const to of toNumbers.slice(0, MAX_SEND_RECIPIENTS)) {
+    try {
+      let finalMediaUrls = [...mediaUrls];
+      let coverPageMediaUrl = null;
+      if (includeCoverPage) {
+        coverPageMediaUrl = await generateCoverPageMediaUrl({
+          req,
+          cfg,
+          toNumber: to,
+          subject: coverSubject,
+          message: coverMessage,
+          requestedBy: senderEmail
+        });
+        finalMediaUrls = [coverPageMediaUrl, ...finalMediaUrls];
+      }
+      const pageCountEstimate = estimateFaxPagesFromMediaUrls(finalMediaUrls);
+      const fax = await telnyxSendFax({
+        apiKey: cfg.telnyx_api_key,
+        connectionId: cfg.telnyx_connection_id,
+        from: cfg.telnyx_from_number,
+        to,
+        mediaUrls: finalMediaUrls
+      });
+
+      upsertFax(
+        fax.id,
+        {
+          id: fax.id,
+          direction: fax.direction,
+          status: fax.status,
+          from: fax.from,
+          to: fax.to,
+          media_url: Array.isArray(fax.media_url) ? fax.media_url.join("\n") : fax.media_url,
+          media_urls: finalMediaUrls,
+          include_cover_page: includeCoverPage,
+          cover_subject: coverSubject,
+          cover_message: coverMessage,
+          failure_reason: null,
+          telnyx_updated_at: fax.updated_at,
+          created_at: fax.created_at,
+          requested_by: senderEmail,
+          source: "email_gateway",
+          email_sender: senderEmail,
+          email_message_id: messageId,
+          email_request_id: requestId,
+          page_count_estimate: pageCountEstimate
+        },
+        hintedTenantId
+      );
+      appendEvent(fax.id, "fax.queued", fax, hintedTenantId);
+      faxIds.push(fax.id);
+      results.push({
+        to,
+        fax_id: fax.id,
+        status: fax.status,
+        queued: true
+      });
+    } catch (error) {
+      results.push({
+        to,
+        fax_id: null,
+        status: "failed",
+        queued: false,
+        error: error.message || "Failed to queue fax."
+      });
+    }
+  }
+
+  const failedCount = results.filter((item) => !item.queued).length;
+  const queuedCount = faxIds.length;
+  const requestStatus = queuedCount > 0 ? "processed" : "failed";
+  const firstError = results.find((item) => item.error)?.error || "";
+  upsertEmailRequest(
+    requestId,
+    {
+      ...baseRequestMeta,
+      status: requestStatus,
+      fax_ids: faxIds,
+      queued_count: queuedCount,
+      failed_count: failedCount,
+      recipients: toNumbers,
+      media_urls: mediaUrls,
+      include_cover_page: includeCoverPage,
+      error: firstError
+    },
+    hintedTenantId
+  );
+
+  appendAuditEvent({
+    tenantId: hintedTenantId,
+    actorUsername: senderEmail,
+    actorRole: "email_gateway",
+    action: queuedCount > 0 ? "fax.email_gateway.queued" : "fax.email_gateway.failed",
+    targetType: "fax_request",
+    targetId: requestId,
+    ipAddress: getAuthClientIp(req),
+    metadata: {
+      queued_count: queuedCount,
+      failed_count: failedCount,
+      message_id: messageId
+    }
+  });
+
+  if (gatewayConfig.notify_sender) {
+    sendEmailGatewayResultEmail({
+      cfg,
+      toEmail: senderEmail,
+      subjectLine: subject,
+      requestId,
+      queuedCount,
+      failedCount,
+      faxIds,
+      errorText: queuedCount > 0 ? "" : firstError
+    }).catch(() => {});
+  }
+
+  if (!queuedCount) {
+    return res.status(400).json({
+      error: firstError || "Email-to-fax request failed.",
+      request_id: requestId,
+      queued_count: 0,
+      failed_count: failedCount,
+      results
+    });
+  }
+
+  return res.status(202).json({
+    ok: true,
+    request_id: requestId,
+    queued_count: queuedCount,
+    failed_count: failedCount,
+    fax_ids: faxIds,
+    results
+  });
 });
 
 app.post("/api/auth/login", async (req, res) => {
@@ -6003,6 +6745,80 @@ app.get("/api/admin/audit-events", requireAdmin, (req, res) => {
   return res.json({ items, tenant_id: tenantId, limit });
 });
 
+app.get("/api/admin/email-gateway", requireAdmin, (req, res) => {
+  const tenantId = normalizeTenantId(req.tenant_id);
+  const tenant = getTenantById(tenantId);
+  if (!tenant) {
+    return res.status(404).json({ error: "Tenant not found." });
+  }
+  const config = readEmailGatewayConfig(tenantId);
+  return res.json({
+    ...sanitizeEmailGatewayConfigForApi(config),
+    inbound_endpoint: "/api/email/inbound",
+    auth_header: "x-email-gateway-token"
+  });
+});
+
+app.patch("/api/admin/email-gateway", requireAdmin, (req, res) => {
+  try {
+    const tenantId = normalizeTenantId(req.tenant_id);
+    const tenant = getTenantById(tenantId);
+    if (!tenant) {
+      return res.status(404).json({ error: "Tenant not found." });
+    }
+    const next = writeEmailGatewayConfig(
+      {
+        enabled: req.body.enabled,
+        provider: req.body.provider,
+        gateway_address: req.body.gateway_address,
+        enforce_allowlist: req.body.enforce_allowlist,
+        allowed_senders: req.body.allowed_senders,
+        allowed_domains: req.body.allowed_domains,
+        default_include_cover_page: req.body.default_include_cover_page,
+        notify_sender: req.body.notify_sender,
+        inbound_notification_enabled: req.body.inbound_notification_enabled,
+        inbound_notification_recipients: req.body.inbound_notification_recipients,
+        webhook_token: req.body.webhook_token
+      },
+      tenantId
+    );
+    appendAuditEvent({
+      tenantId,
+      actorUsername: req.session.user?.username || "unknown",
+      actorRole: req.session.user?.role || "admin",
+      action: "admin.email_gateway.updated",
+      targetType: "email_gateway",
+      targetId: tenantId,
+      ipAddress: getAuthClientIp(req),
+      metadata: {
+        enabled: next.enabled,
+        enforce_allowlist: next.enforce_allowlist,
+        allowed_senders_count: normalizeEmailListInput(next.allowed_senders).length,
+        allowed_domains_count: normalizeDomainListInput(next.allowed_domains).length,
+        inbound_notification_enabled: next.inbound_notification_enabled
+      }
+    });
+    return res.json({
+      ...sanitizeEmailGatewayConfigForApi(next),
+      inbound_endpoint: "/api/email/inbound",
+      auth_header: "x-email-gateway-token"
+    });
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Could not update email gateway settings." });
+  }
+});
+
+app.get("/api/admin/email-requests", requireAdmin, (req, res) => {
+  const tenantId = normalizeTenantId(req.tenant_id);
+  const limit = Math.max(1, Math.min(Number(req.query.limit || 100), 500));
+  const store = readEmailRequestsStore();
+  const items = Object.values(store.items || {})
+    .filter((item) => normalizeTenantId(item.tenant_id) === tenantId)
+    .sort((a, b) => new Date(b.updated_at || b.received_at || 0).getTime() - new Date(a.updated_at || a.received_at || 0).getTime())
+    .slice(0, limit);
+  return res.json({ items, tenant_id: tenantId, limit });
+});
+
 app.get("/api/admin/dashboard", requireAdmin, (req, res) => {
   const tenantId = normalizeTenantId(req.tenant_id);
   const tenant = getTenantById(tenantId);
@@ -6670,6 +7486,29 @@ app.post(["/api/webhooks/telnyx", "/telnyx/webhook"], (req, res) => {
           billed_page_count: resolvedPageCount,
           usage_recorded_inbound_at: new Date().toISOString()
         }, tenantId);
+      }
+
+      if (isInboundFax && ["received", "delivered"].includes((parsed.status || "").toLowerCase()) && !existingFax.inbound_email_notified_at) {
+        const inboundCfg = readEmailGatewayConfig(tenantId);
+        if (inboundCfg.inbound_notification_enabled && normalizeEmailListInput(inboundCfg.inbound_notification_recipients).length) {
+          const runtimeCfg = getRuntimeConfig(tenantId);
+          const notifyResult = await sendInboundFaxNotificationEmail({
+            cfg: runtimeCfg,
+            recipients: inboundCfg.inbound_notification_recipients,
+            fax: {
+              ...mergedFax,
+              status: parsed.status || mergedFax.status,
+              billed_page_count: resolvedPageCount,
+              updated_at: new Date().toISOString()
+            },
+            tenantId
+          }).catch((error) => ({ sent: false, reason: error.message || "notify_failed" }));
+          upsertFax(parsed.faxId, {
+            id: parsed.faxId,
+            inbound_email_notified_at: notifyResult.sent ? new Date().toISOString() : "",
+            inbound_email_notify_reason: notifyResult.reason || ""
+          }, tenantId);
+        }
       }
 
       const retryJob = getRetryJobByFaxId(parsed.faxId, tenantId);

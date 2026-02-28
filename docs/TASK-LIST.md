@@ -65,9 +65,9 @@
 
 ## Next Tasks
 - [ ] Execute commercial SaaS program in `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-commercial-saas-hipaa.md`.
-- [ ] Implement Phase A/B of `/Users/alex/Documents/Projects/Telnyx/docs/PRD-email-fax-gateway.md` (provider webhook, signature verify, parser, attachment intake, queue integration).
-- [ ] Build admin Email Gateway settings + request history UI per `/Users/alex/Documents/Projects/Telnyx/docs/PRD-email-fax-gateway.md`.
-- [ ] Add idempotency by provider message-id and replay-safe controls for email-to-fax webhooks.
+- [x] Implement Phase A/B baseline of `/Users/alex/Documents/Projects/Telnyx/docs/PRD-email-fax-gateway.md` (webhook token gate, parser, attachment intake, queue integration).
+- [x] Build admin Email Gateway settings + request history API and admin settings UI integration.
+- [x] Add idempotency by provider message-id and replay-safe response handling for email-to-fax webhooks.
 - [ ] Add automated tests for `/api/faxes` multi-recipient success/failure mixes.
 - [ ] Add tests for contact cap during CSV import.
 - [ ] Add localhost runtime banner explaining Telnyx public-HTTPS media requirement.
@@ -77,3 +77,5 @@
 - [ ] Add webhook signature replay cache (event-id dedupe) for stronger webhook hardening.
 - [ ] Add at-rest encryption for uploaded files and automated retention-policy reporting.
 - [ ] Add automated integration tests for Google auth callback success/failure flows.
+- [ ] Add provider-native signature verification for Mailgun/SendGrid inbound email webhooks.
+- [ ] Add admin UI table for recent email gateway requests (`/api/admin/email-requests`).

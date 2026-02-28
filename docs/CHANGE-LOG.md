@@ -1,5 +1,25 @@
 # Change Log
 
+## 2026-02-27 (email-to-fax implementation wave)
+### Completed
+- Added tenant-configurable email gateway backend:
+  - `GET /api/admin/email-gateway`
+  - `PATCH /api/admin/email-gateway`
+  - `GET /api/admin/email-requests`
+  - `POST /api/email/inbound` (public webhook, token required)
+- Added webhook token enforcement for email gateway (`x-email-gateway-token`).
+- Added sender allowlist policy (allowed senders + domains, enforce toggle).
+- Added message-id dedupe/idempotent replay behavior for email webhook requests.
+- Added email request persistence:
+  - `/Users/alex/Documents/Projects/Telnyx/data/email_requests.json`
+- Added email gateway config persistence:
+  - `/Users/alex/Documents/Projects/Telnyx/data/email_gateway_config.json`
+- Added email attachment intake for PDF/TIFF (URL/base64) with queue integration to Telnyx send flow.
+- Added fax record metadata for email-sourced sends (`source=email_gateway`, sender/message IDs).
+- Added optional sender response emails for email-to-fax results.
+- Added optional inbound fax notification emails (tenant-configurable recipients).
+- Added admin settings UI section for Email Gateway management.
+
 ## 2026-02-27 (email gateway PRD wave)
 ### Completed
 - Added dedicated planning document:

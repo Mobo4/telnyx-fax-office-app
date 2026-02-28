@@ -285,6 +285,63 @@
           </section>
 
           <section class="card">
+            <h2>Email Gateway (Email-to-Fax)</h2>
+            <p class="helper-text">
+              Configure inbound email webhook to queue outbound fax. Use subject format:
+              <code>FAX TO: +17145551234</code>
+            </p>
+            <form id="email-gateway-form">
+              <label class="inline-checkbox">
+                <input id="email_gateway_enabled" name="enabled" type="checkbox" />
+                Enable Email-to-Fax Gateway
+              </label>
+
+              <label for="email_gateway_address">Gateway Address</label>
+              <input id="email_gateway_address" name="gateway_address" placeholder="fax+tenant@refract.ing" />
+
+              <label for="email_gateway_provider">Provider Label</label>
+              <input id="email_gateway_provider" name="provider" placeholder="mailgun / sendgrid / generic" />
+
+              <label for="email_gateway_webhook_token">Webhook Token (leave blank to keep current)</label>
+              <input id="email_gateway_webhook_token" name="webhook_token" type="password" />
+
+              <label class="inline-checkbox">
+                <input id="email_gateway_enforce_allowlist" name="enforce_allowlist" type="checkbox" checked />
+                Enforce sender allowlist
+              </label>
+
+              <label for="email_gateway_allowed_senders">Allowed Sender Emails (comma/new line)</label>
+              <textarea id="email_gateway_allowed_senders" name="allowed_senders" rows="3"></textarea>
+
+              <label for="email_gateway_allowed_domains">Allowed Sender Domains (comma/new line)</label>
+              <textarea id="email_gateway_allowed_domains" name="allowed_domains" rows="2"></textarea>
+
+              <label class="inline-checkbox">
+                <input id="email_gateway_default_cover" name="default_include_cover_page" type="checkbox" checked />
+                Default include cover page for email requests
+              </label>
+
+              <label class="inline-checkbox">
+                <input id="email_gateway_notify_sender" name="notify_sender" type="checkbox" checked />
+                Email sender confirmation/failure response
+              </label>
+
+              <label class="inline-checkbox">
+                <input id="email_gateway_inbound_notify_enabled" name="inbound_notification_enabled" type="checkbox" />
+                Email notifications for inbound fax received
+              </label>
+
+              <label for="email_gateway_inbound_recipients">Inbound Notification Recipients</label>
+              <textarea id="email_gateway_inbound_recipients" name="inbound_notification_recipients" rows="2"></textarea>
+
+              <button id="email-gateway-save-btn" type="submit">Save Email Gateway Settings</button>
+            </form>
+            <p id="email-gateway-endpoint" class="helper-text"></p>
+            <p id="email-gateway-token-state" class="helper-text"></p>
+            <p id="email-gateway-message" class="message"></p>
+          </section>
+
+          <section class="card">
             <h2>Billing (Stripe)</h2>
             <p class="helper-text">
               Start or manage paid subscription in Stripe. Cancellation is handled in Stripe customer portal.

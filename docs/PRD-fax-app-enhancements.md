@@ -30,6 +30,8 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 8. As admin, I can access recent history quickly while retaining older records.
 9. As office staff, I can sign in with my own Google account under the same tenant account.
 10. As a new customer, I can land on a public marketing website, sign up, and be routed into checkout/login.
+11. As office staff, I can send fax jobs by emailing documents to the tenant gateway address.
+12. As office staff/admin, I can receive inbound fax notification emails from the app when configured.
 
 ## Functional Requirements
 
@@ -79,6 +81,27 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
   - Selected files upload on Send click.
   - Send uses exactly currently selected files.
   - If upload result count mismatches selected count, fail with explicit error.
+
+### Email-to-Fax Gateway
+- Admin-configurable tenant gateway settings in admin panel.
+- Public inbound webhook endpoint: `POST /api/email/inbound`.
+- Webhook request must include gateway auth token (`x-email-gateway-token`).
+- Sender policy:
+  - allowlist enforcement by email/domain (default ON).
+- Message dedupe by provider message-id to prevent duplicate fax sends.
+- Destination parsing:
+  - required subject format `FAX TO: +E164[, +E164...]`.
+- Attachment parsing:
+  - accepts PDF/TIFF via attachment URLs or base64 attachment payloads.
+  - same max count and allowed type constraints as UI send flow.
+- Queue behavior:
+  - routes through Telnyx send pipeline and records fax history with `source=email_gateway`.
+- Sender response email:
+  - optional notify success/failure summary with fax IDs.
+
+### Fax-to-Email Notifications
+- For inbound fax received/delivered events, app can send notification email to configured recipients.
+- Inbound notification is tenant-configurable and disabled by default.
 
 ### Confirmation UX
 - On successful API queue response, show modal popup with:
@@ -147,6 +170,9 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - `/api/admin/billing/checkout-session` and `/api/admin/billing/portal-session` are admin-only.
 - `/api/webhooks/stripe` must verify Stripe signature using webhook secret.
 - Tenant settings are isolated in tenant-scoped config storage (no global key bleed).
+- `/api/email/inbound` must enforce webhook token check before processing.
+- `/api/email/inbound` must reject sender when allowlist policy fails.
+- `/api/email/inbound` must dedupe message-id replays idempotently.
 
 ### Deployment and Availability
 - Production requires a public HTTPS host for webhook and document retrieval.
