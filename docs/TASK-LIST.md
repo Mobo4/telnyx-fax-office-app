@@ -88,5 +88,5 @@
 - [ ] Add automated integration tests for Google auth callback success/failure flows.
 - [ ] Add provider-native signature verification for Mailgun/SendGrid inbound email webhooks.
 - [ ] Add admin UI table for recent email gateway requests (`/api/admin/email-requests`).
-- [ ] Execute live Vercel split deploy and production smoke test checklist from `docs/DEPLOY-VERCEL-MARKETING.md`.
-- [ ] Disable Vercel deployment protection for production marketing domain (currently returns `401`).
+- [x] Execute live Vercel split deploy and production smoke test checklist from `docs/DEPLOY-VERCEL-MARKETING.md`.
+- [x] Configure production custom domain public access (`refract.ing`/`www.refract.ing`) while keeping `*.vercel.app` protected.

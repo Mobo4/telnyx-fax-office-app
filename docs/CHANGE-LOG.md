@@ -440,6 +440,15 @@
   - `/Users/alex/Documents/Projects/Telnyx/docs/DEPLOY-VERCEL-MARKETING.md`
 - Updated `.env.example` and `README.md` with split-host setup variables and steps.
 - Updated continuity docs (`PRD`, `KNOWLEDGE-BASE`, `TASK-LIST`) for this session.
+- Added Vercel project domains:
+  - `refract.ing`
+  - `www.refract.ing`
+- Updated Cloudflare DNS (zone `refract.ing`) to Vercel target records (DNS-only mode):
+  - `A @ -> 76.76.21.21`
+  - `A www -> 76.76.21.21`
+- Applied Render env var via API:
+  - `PUBLIC_SIGNUP_CORS_ORIGINS=https://refract.ing,https://www.refract.ing`
+- Triggered Render deploy on commit `2d371cb` and verified live.
 
 ### Validation
 - `node --check /Users/alex/Documents/Projects/Telnyx/server.js`
@@ -451,7 +460,13 @@
   - Marketing page includes `/marketing.config.js` script tag
   - Vercel production deploy command succeeded for marketing project:
     - `https://public-c86fzs4yu-alexander-bonakdars-projects.vercel.app`
-  - Current Vercel deployment protection returns `401` until project protection is disabled.
+- Raw `*.vercel.app` URL may remain protected while production custom domains stay public.
+- Production domain checks:
+  - `https://refract.ing` -> `200`
+  - `https://www.refract.ing` -> `301` to `https://refract.ing/`
+- Cross-origin signup checks:
+  - `OPTIONS /api/public/signup` with `Origin: https://refract.ing` -> `204` + CORS allow headers
+  - `OPTIONS /api/public/signup` with `Origin: https://www.refract.ing` -> `204` + CORS allow headers
 
 ### Files Changed
 - `/Users/alex/Documents/Projects/Telnyx/server.js`

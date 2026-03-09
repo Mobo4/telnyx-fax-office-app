@@ -291,7 +291,10 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - If webhook signature validation is enabled without a valid public key, inbound webhook updates will fail with `401`.
 - Vercel deployment is not currently a drop-in target for this codebase because the app expects a long-running Node server with local/session file persistence.
 - Use split-host deployment guide: `/Users/alex/Documents/Projects/Telnyx/docs/DEPLOY-VERCEL-MARKETING.md`.
-- Current split-host Vercel deployment exists but is behind Vercel deployment protection (`401`) and must be made public before production cutover.
+- Split-host production domains are now public on Vercel:
+  - `https://refract.ing` (200)
+  - `https://www.refract.ing` (301 -> `https://refract.ing`)
+- The raw `*.vercel.app` deployment URL can still remain protected without impacting production domain access.
 
 ## Gaps / Next Hardening
 - Add automated integration tests for send success/failure paths.
