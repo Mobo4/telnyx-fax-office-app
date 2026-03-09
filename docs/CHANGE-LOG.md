@@ -449,6 +449,9 @@
 - Applied Render env var via API:
   - `PUBLIC_SIGNUP_CORS_ORIGINS=https://refract.ing,https://www.refract.ing`
 - Triggered Render deploy on commit `2d371cb` and verified live.
+- Added explicit Knowledge Base explanation for:
+  - why split-host architecture is currently used
+  - what happens when Render sleeps and operational impact
 
 ### Validation
 - `node --check /Users/alex/Documents/Projects/Telnyx/server.js`

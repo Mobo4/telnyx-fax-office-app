@@ -282,6 +282,28 @@ Operational reference for architecture, workflow behavior, limits, and known edg
   - marketing on Vercel
   - API + `/app` on Render
 
+## Why Split Setup (Vercel + Render)
+- We split because each host is doing what it is best at right now:
+  - Vercel: fast static/public website delivery for marketing pages (`refract.ing`).
+  - Render: long-running Node process for fax runtime (`/app`, `/api`, webhooks, retries, local session/data behavior).
+- This avoids a risky full-runtime migration and keeps existing fax users on the same backend without forced account/session/data changes.
+- User-visible result:
+  - Public website loads from Vercel.
+  - Actual fax operations still run on Render.
+  - Existing office users continue using the same app backend URL and behavior.
+
+## What Happens If Render Sleeps
+- If the Render service idles/sleeps, the API and app runtime are temporarily unavailable until wake.
+- Practical impact:
+  - App login/send/history calls may pause or fail until the service wakes.
+  - Inbound webhook processing can be delayed (or missed if provider retry window is exceeded).
+  - Background jobs (retry loops, queue workers) are paused while sleeping.
+- Vercel marketing site still stays up, but fax operations depend on Render being awake.
+- Mitigation options:
+  - Move Render service to a non-sleeping plan.
+  - Keep inbound email recipient backup enabled in Telnyx.
+  - Use uptime pings as temporary mitigation, but this is weaker than a no-sleep plan.
+
 ## Known Environment Caveats
 - If app runs only on `http://localhost`, Telnyx cannot fetch upload files, so real outbound fax sends fail.
 - Inbound reliability requires always-on hosting. Free sleep/idle plans can delay or miss time-sensitive webhook delivery.
