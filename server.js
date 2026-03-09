@@ -84,7 +84,7 @@ const PLAN_PRICING_POLICY = {
     overage_inbound_per_page_usd: 0.03
   },
   starter: {
-    monthly_fee_usd: 18.88,
+    monthly_fee_usd: 19.99,
     included_outbound_pages: 300,
     included_inbound_pages: 300,
     overage_outbound_per_page_usd: 0.021,
@@ -171,11 +171,23 @@ const STRIPE_CANCEL_URL = (process.env.STRIPE_CANCEL_URL || "").trim();
 const STRIPE_PORTAL_RETURN_URL = (process.env.STRIPE_PORTAL_RETURN_URL || "").trim();
 const STRIPE_ENABLED = BILLING_MODE === "paid" && Boolean(STRIPE_SECRET_KEY);
 const EMAIL_GATEWAY_WEBHOOK_TOKEN = (process.env.EMAIL_GATEWAY_WEBHOOK_TOKEN || "").trim();
+const STRIPE_REFUND_WINDOW_DAYS = Math.max(1, Number(process.env.STRIPE_REFUND_WINDOW_DAYS || 2));
+const STRIPE_REFUND_WINDOW_MS = STRIPE_REFUND_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 const STRIPE_PRICE_BY_PLAN = {
   starter: STRIPE_PRICE_STARTER_MONTHLY,
   pro: STRIPE_PRICE_PRO_MONTHLY,
   enterprise: STRIPE_PRICE_ENTERPRISE_MONTHLY
 };
+const PUBLIC_APP_BASE_URL = (process.env.PUBLIC_APP_BASE_URL || "").trim();
+const PUBLIC_MARKETING_BASE_URL = (process.env.PUBLIC_MARKETING_BASE_URL || "").trim();
+const PUBLIC_SIGNUP_CORS_ORIGINS = Array.from(
+  new Set(
+    (process.env.PUBLIC_SIGNUP_CORS_ORIGINS || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean)
+  )
+);
 const stripeClient = STRIPE_SECRET_KEY ? new Stripe(STRIPE_SECRET_KEY) : null;
 const D1_SYNC_STORE_FILENAMES = new Set([
   "faxes.json",
@@ -263,6 +275,28 @@ function buildAbsoluteUrl(req, configuredUrl, fallbackPath = "/") {
   return `${base}${fallbackPath}`;
 }
 
+function resolvePublicCorsOrigin(origin) {
+  const normalizedOrigin = (origin || "").toString().trim();
+  if (!normalizedOrigin) {
+    return "";
+  }
+  if (PUBLIC_SIGNUP_CORS_ORIGINS.includes("*")) {
+    return normalizedOrigin;
+  }
+  return PUBLIC_SIGNUP_CORS_ORIGINS.includes(normalizedOrigin) ? normalizedOrigin : "";
+}
+
+function applyPublicSignupCors(req, res) {
+  const allowedOrigin = resolvePublicCorsOrigin(req.get("origin"));
+  if (!allowedOrigin) {
+    return;
+  }
+  res.set("Vary", "Origin");
+  res.set("Access-Control-Allow-Origin", allowedOrigin);
+  res.set("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.set("Access-Control-Allow-Headers", "Content-Type,X-Tenant-Id");
+}
+
 app.set("trust proxy", 1);
 app.use(
   express.json({
@@ -273,6 +307,9 @@ app.use(
   })
 );
 app.use(express.urlencoded({ extended: true }));
+app.use("/uploads", (req, res) => {
+  return res.status(404).json({ error: "Not found." });
+});
 app.use(express.static(PUBLIC_DIR));
 
 function ensureDataDir() {
@@ -317,6 +354,35 @@ function isE164(value) {
   return /^\+[1-9]\d{7,14}$/.test(value || "");
 }
 
+function normalizeUsFaxNumber(value) {
+  const raw = (value || "").toString().trim();
+  if (!raw) {
+    return "";
+  }
+  const cleaned = raw.replace(/[^\d+]/g, "");
+  if (!cleaned) {
+    return "";
+  }
+
+  if (cleaned.startsWith("+")) {
+    const normalized = `+${cleaned.slice(1).replace(/\D/g, "")}`;
+    return /^\+1\d{10}$/.test(normalized) ? normalized : "";
+  }
+
+  const digits = cleaned.replace(/\D/g, "");
+  if (digits.length === 10) {
+    return `+1${digits}`;
+  }
+  if (digits.length === 11 && digits.startsWith("1")) {
+    return `+${digits}`;
+  }
+  return "";
+}
+
+function isUsFaxNumber(value) {
+  return /^\+1\d{10}$/.test((value || "").toString().trim());
+}
+
 function parseMediaUrlsInput(value) {
   if (Array.isArray(value)) {
     return Array.from(
@@ -351,7 +417,7 @@ function isHttpsMediaUrl(value) {
 
 function parseRecipientNumbersInput(value) {
   const tokens = parseRecipientTokensInput(value);
-  return Array.from(new Set(tokens.map((item) => normalizeE164(item)).filter(Boolean)));
+  return Array.from(new Set(tokens.map((item) => normalizeUsFaxNumber(item)).filter(Boolean)));
 }
 
 function parseRecipientTokensInput(value) {
@@ -484,6 +550,23 @@ function decodeJwtPayload(token) {
   }
 }
 
+function buildPublicUrl(baseUrl, fallbackPath) {
+  const cleanFallbackPath = (fallbackPath || "/").toString();
+  const normalizedPath = cleanFallbackPath.startsWith("/") ? cleanFallbackPath : `/${cleanFallbackPath}`;
+  const baseCandidate = (baseUrl || "").toString().trim();
+  if (baseCandidate) {
+    try {
+      const parsed = new URL(baseCandidate);
+      if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+        return `${baseCandidate.replace(/\/+$/, "")}${normalizedPath}`;
+      }
+    } catch (error) {
+      // ignore invalid configured URL and use fallback
+    }
+  }
+  return normalizedPath;
+}
+
 function buildAuthRedirectUrl({ tenantId = DEFAULT_TENANT_ID, error = "", source = "" } = {}) {
   const params = new URLSearchParams();
   const normalizedTenantId = normalizeTenantId(tenantId);
@@ -497,7 +580,7 @@ function buildAuthRedirectUrl({ tenantId = DEFAULT_TENANT_ID, error = "", source
     params.set("auth_source", (source || "").toString().slice(0, 40));
   }
   const query = params.toString();
-  return query ? `/app?${query}` : "/app";
+  return buildPublicUrl(PUBLIC_APP_BASE_URL, query ? `/app?${query}` : "/app");
 }
 
 function redirectToLoginWithAuthError(res, { tenantId, message } = {}) {
@@ -1300,6 +1383,42 @@ function applyTenantBillingPatch(tenantId, patch = {}, { allowFreeMode = false }
 
 function updateTenantBilling(tenantId, patch = {}) {
   return applyTenantBillingPatch(tenantId, patch);
+}
+
+function isTenantLoginAllowed(tenantId) {
+  const tenant = getTenantById(tenantId);
+  if (!tenant) {
+    return false;
+  }
+  if (BILLING_MODE !== "paid") {
+    return tenant.active !== false;
+  }
+  const billing = getTenantBilling(tenantId);
+  const status = normalizeBillingStatus(billing?.status || (tenant.active === false ? "suspended" : "active"));
+  return ["active", "trialing", "past_due", "canceled", "incomplete", "unpaid"].includes(status);
+}
+
+function isTenantAllowedToSendFax(tenantId) {
+  if (BILLING_MODE !== "paid") {
+    return true;
+  }
+  const billing = getTenantBilling(tenantId);
+  const status = normalizeBillingStatus(billing?.status || "suspended");
+  return ["active", "trialing", "past_due"].includes(status);
+}
+
+function requireTenantAllowedToSendFax(res, tenantId) {
+  if (isTenantAllowedToSendFax(tenantId)) {
+    return true;
+  }
+  const billing = getTenantBilling(tenantId);
+  const status = normalizeBillingStatus(billing?.status || "suspended");
+  res.status(402).json({
+    error:
+      "Active subscription required for sending faxes. Renew or update billing to continue sending.",
+    billing_status: status
+  });
+  return false;
 }
 
 function getTenantPlanLimits(tenantId) {
@@ -3414,9 +3533,9 @@ function listContactTags(tenantId = DEFAULT_TENANT_ID) {
 
 function createContact({ name, fax_number, tags, email, notes, tenantId = DEFAULT_TENANT_ID }) {
   const normalizedTenantId = normalizeTenantId(tenantId);
-  const faxNumber = normalizeE164(fax_number);
-  if (!isE164(faxNumber)) {
-    throw new Error("fax_number must be E.164 format, for example +17145551234.");
+  const faxNumber = normalizeUsFaxNumber(fax_number);
+  if (!isUsFaxNumber(faxNumber)) {
+    throw new Error("fax_number must be a US number (10 digits) or +1 E.164, for example 7145551234.");
   }
 
   const store = readContactsStore();
@@ -3469,9 +3588,9 @@ function updateContact(contactId, patch, tenantId = DEFAULT_TENANT_ID) {
     next.name = (patch.name || "").toString().trim() || existing.name;
   }
   if (patch.fax_number !== undefined) {
-    const faxNumber = normalizeE164(patch.fax_number);
-    if (!isE164(faxNumber)) {
-      throw new Error("fax_number must be E.164 format.");
+    const faxNumber = normalizeUsFaxNumber(patch.fax_number);
+    if (!isUsFaxNumber(faxNumber)) {
+      throw new Error("fax_number must be a US number (10 digits) or +1 E.164.");
     }
     const duplicate = Object.values(store.items).some(
       (item) =>
@@ -3539,10 +3658,10 @@ function importContactsFromCsv(csvText, tenantId = DEFAULT_TENANT_ID) {
 
   records.forEach((row, index) => {
     const faxRaw = row.fax_number || row.fax || row.number || row.phone || "";
-    const faxNumber = normalizeE164(faxRaw);
-    if (!isE164(faxNumber)) {
+    const faxNumber = normalizeUsFaxNumber(faxRaw);
+    if (!isUsFaxNumber(faxNumber)) {
       result.skipped += 1;
-      result.errors.push(`Row ${index + 2}: invalid fax number "${faxRaw}".`);
+      result.errors.push(`Row ${index + 2}: invalid US fax number "${faxRaw}".`);
       return;
     }
 
@@ -3669,6 +3788,19 @@ async function processQueuedBulkJobs() {
       }
 
       const tenantId = normalizeTenantId(nextJob.tenant_id);
+      if (!isTenantAllowedToSendFax(tenantId)) {
+        updateBulkJob(
+          nextJob.id,
+          (job) => ({
+            ...job,
+            status: "failed",
+            completed_at: new Date().toISOString(),
+            error: "Active subscription required to send faxes."
+          }),
+          tenantId
+        );
+        continue;
+      }
       const cfg = getRuntimeConfig(tenantId);
       if (!cfg.telnyx_api_key || !cfg.telnyx_connection_id || !cfg.telnyx_from_number) {
         updateBulkJob(nextJob.id, (job) => ({
@@ -3684,11 +3816,15 @@ async function processQueuedBulkJobs() {
 
       for (const contact of nextJob.contacts) {
         try {
+          const to = normalizeUsFaxNumber(contact.fax_number || "");
+          if (!isUsFaxNumber(to)) {
+            throw new Error("Contact fax number is not a valid US number.");
+          }
           const fax = await telnyxSendFax({
             apiKey: cfg.telnyx_api_key,
             connectionId: cfg.telnyx_connection_id,
             from: cfg.telnyx_from_number,
-            to: contact.fax_number,
+            to,
             mediaUrls: [nextJob.media_url]
           });
 
@@ -3947,6 +4083,19 @@ async function processBusyRetryQueue() {
       }
 
       const tenantId = normalizeTenantId(nextJob.tenant_id);
+      if (!isTenantAllowedToSendFax(tenantId)) {
+        await markRetryJobFinalFailureAndAlert(nextJob, {
+          tenantId,
+          failureReason: "billing_inactive",
+          fax: {
+            id: nextJob.current_fax_id || nextJob.root_fax_id,
+            from: nextJob.from || "",
+            to: nextJob.to || "",
+            status: "failed"
+          }
+        });
+        continue;
+      }
       const cfg = getRuntimeConfig(tenantId);
       const retriesAttempted = Number(nextJob.retries_attempted || 0);
       const maxRetries = Number(nextJob.max_retries || BUSY_RETRY_MAX_ATTEMPTS);
@@ -3972,9 +4121,9 @@ async function processBusyRetryQueue() {
         continue;
       }
 
-      const to = normalizeE164(nextJob.to || "");
+      const to = normalizeUsFaxNumber(nextJob.to || "");
       const mediaUrls = Array.isArray(nextJob.media_urls) ? nextJob.media_urls.filter(Boolean) : [];
-      if (!isE164(to) || !mediaUrls.length) {
+      if (!isUsFaxNumber(to) || !mediaUrls.length) {
         await markRetryJobFinalFailureAndAlert(nextJob, {
           tenantId,
           failureReason: "retry_payload_invalid",
@@ -4856,6 +5005,14 @@ app.use((req, res, next) => {
   return next();
 });
 
+app.use("/api/public", (req, res, next) => {
+  applyPublicSignupCors(req, res);
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
+  return next();
+});
+
 app.use("/api", (req, res, next) => {
   const openRoutes = new Set([
     "/health",
@@ -4863,6 +5020,7 @@ app.use("/api", (req, res, next) => {
     "/auth/logout",
     "/auth/me",
     "/public/signup",
+    "/public/signup/google/start",
     "/email/inbound",
     "/auth/google/config",
     "/auth/google/start",
@@ -4883,6 +5041,67 @@ app.use("/api", (req, res, next) => {
     return res.status(403).json({ error: "Tenant mismatch." });
   }
   return next();
+});
+
+app.get("/api/public/signup/google/start", async (req, res) => {
+  try {
+    if (!isGoogleAuthConfigured()) {
+      throw new Error("Google sign-up is not configured.");
+    }
+    const companyName = (req.query.company_name || req.query.office_name || "").toString().trim();
+    const requestedPlan = normalizePlanName(req.query.plan || STRIPE_DEFAULT_PLAN, STRIPE_DEFAULT_PLAN);
+    if (!companyName || companyName.length < 2) {
+      throw new Error("Company name is required.");
+    }
+    if (BILLING_MODE === "paid" && requestedPlan === "free") {
+      throw new Error("Free plan is not available in paid billing mode.");
+    }
+    if (BILLING_MODE === "paid" && (!STRIPE_ENABLED || !stripeClient)) {
+      throw new Error("Signup payment is temporarily unavailable. Stripe is not configured.");
+    }
+    if (BILLING_MODE === "paid" && !isStripeConfiguredForPlan(requestedPlan)) {
+      throw new Error(`Signup plan "${requestedPlan}" is not configured for Stripe.`);
+    }
+
+    const tenantId = buildSignupTenantId({
+      requestedTenantId: req.query.tenant_id || "",
+      companyName
+    });
+    if (getTenantById(tenantId)) {
+      throw new Error("A workspace for this signup already exists. Please sign in instead.");
+    }
+
+    const stateValue = crypto.randomBytes(24).toString("base64url");
+    const nonceValue = crypto.randomBytes(24).toString("base64url");
+    req.session.google_oauth = {
+      tenant_id: tenantId,
+      state: stateValue,
+      nonce: nonceValue,
+      mode: "signup",
+      signup: {
+        tenant_id: tenantId,
+        company_name: companyName,
+        plan: requestedPlan
+      },
+      created_at: Date.now()
+    };
+    await saveSession(req);
+
+    const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+    authUrl.searchParams.set("client_id", GOOGLE_CLIENT_ID);
+    authUrl.searchParams.set("redirect_uri", getGoogleRedirectUri(req));
+    authUrl.searchParams.set("response_type", "code");
+    authUrl.searchParams.set("scope", "openid email profile");
+    authUrl.searchParams.set("state", stateValue);
+    authUrl.searchParams.set("nonce", nonceValue);
+    authUrl.searchParams.set("prompt", "select_account");
+    authUrl.searchParams.set("access_type", "offline");
+    return res.redirect(authUrl.toString());
+  } catch (error) {
+    const params = new URLSearchParams();
+    params.set("signup_error", (error.message || "Google sign-up failed.").slice(0, 240));
+    return res.redirect(buildPublicUrl(PUBLIC_MARKETING_BASE_URL, `/?${params.toString()}`));
+  }
 });
 
 app.post("/api/public/signup", async (req, res) => {
@@ -4930,15 +5149,17 @@ app.post("/api/public/signup", async (req, res) => {
 
     if (requiresStripeCheckout) {
       const priceId = stripePriceIdForPlan(requestedPlan);
+      const signupSuccessPath = `/app?tenant_id=${encodeURIComponent(tenantId)}&billing=success`;
+      const signupCancelPath = `/app?tenant_id=${encodeURIComponent(tenantId)}&billing=cancel`;
       const successUrl = buildAbsoluteUrl(
         req,
-        STRIPE_SUCCESS_URL,
-        `/app?tenant_id=${encodeURIComponent(tenantId)}&billing=success`
+        STRIPE_SUCCESS_URL || buildPublicUrl(PUBLIC_APP_BASE_URL, signupSuccessPath),
+        signupSuccessPath
       );
       const cancelUrl = buildAbsoluteUrl(
         req,
-        STRIPE_CANCEL_URL,
-        `/app?tenant_id=${encodeURIComponent(tenantId)}&billing=cancel`
+        STRIPE_CANCEL_URL || buildPublicUrl(PUBLIC_APP_BASE_URL, signupCancelPath),
+        signupCancelPath
       );
       const session = await stripeClient.checkout.sessions.create({
         mode: "subscription",
@@ -5047,7 +5268,11 @@ app.post("/api/public/signup", async (req, res) => {
       requires_payment: Boolean(checkoutUrl),
       checkout_url: checkoutUrl,
       checkout_session_id: checkoutSessionId,
-      login_url: `/app?tenant_id=${encodeURIComponent(tenantId)}`
+      login_url: buildAbsoluteUrl(
+        req,
+        buildPublicUrl(PUBLIC_APP_BASE_URL, `/app?tenant_id=${encodeURIComponent(tenantId)}`),
+        `/app?tenant_id=${encodeURIComponent(tenantId)}`
+      )
     });
   } catch (error) {
     return res.status(400).json({ error: error.message || "Could not create account." });
@@ -5066,6 +5291,9 @@ app.post("/api/email/inbound", async (req, res) => {
   const tenant = getTenantById(hintedTenantId);
   if (!tenant) {
     return res.status(404).json({ error: "Tenant not found for email gateway." });
+  }
+  if (!requireTenantAllowedToSendFax(res, hintedTenantId)) {
+    return;
   }
 
   const gatewayConfig = readEmailGatewayConfig(hintedTenantId);
@@ -5149,14 +5377,16 @@ app.post("/api/email/inbound", async (req, res) => {
       error: "No fax recipients found. Use subject format: FAX TO: +17145551234"
     });
   }
-  const invalidNumber = recipientTokens.find((value) => !isE164(normalizeE164(value)));
+  const invalidNumber = recipientTokens.find((value) => !isUsFaxNumber(normalizeUsFaxNumber(value)));
   if (invalidNumber) {
     upsertEmailRequest(
       requestId,
       { ...baseRequestMeta, status: "rejected", error: `invalid_recipient:${invalidNumber}` },
       hintedTenantId
     );
-    return res.status(400).json({ error: `Invalid fax number in request: ${invalidNumber}` });
+    return res.status(400).json({
+      error: `Invalid US fax number in request: ${invalidNumber}. Use 10-digit US or +1 E.164 format.`
+    });
   }
 
   const mediaUrls = Array.from(
@@ -5353,8 +5583,8 @@ app.post("/api/auth/login", async (req, res) => {
     if (!tenant) {
       return res.status(404).json({ error: "Tenant is not provisioned." });
     }
-    if (tenant.active === false) {
-      return res.status(403).json({ error: "Tenant is suspended." });
+    if (!isTenantLoginAllowed(tenantId)) {
+      return res.status(403).json({ error: "Tenant access is suspended." });
     }
     const username = normalizeUsername(req.body.username);
     const password = req.body.password || "";
@@ -5454,7 +5684,7 @@ app.get("/api/auth/google/config", (req, res) => {
     configured: isGoogleAuthConfigured(),
     tenant_id: tenantId,
     tenant_exists: Boolean(tenant),
-    tenant_active: tenant ? tenant.active !== false : false,
+    tenant_active: tenant ? isTenantLoginAllowed(tenantId) : false,
     auto_create_users: GOOGLE_AUTH_AUTO_CREATE_USERS,
     allowed_domains: GOOGLE_AUTH_ALLOWED_DOMAINS,
     redirect_uri: getGoogleRedirectUri(req)
@@ -5472,8 +5702,8 @@ app.get("/api/auth/google/start", async (req, res) => {
     if (!tenant) {
       throw new Error("Tenant is not provisioned.");
     }
-    if (tenant.active === false) {
-      throw new Error("Tenant is suspended.");
+    if (!isTenantLoginAllowed(tenantId)) {
+      throw new Error("Tenant access is suspended.");
     }
 
     const stateValue = crypto.randomBytes(24).toString("base64url");
@@ -5532,8 +5762,8 @@ app.get("/api/auth/google/link/start", async (req, res) => {
     if (!tenant) {
       throw new Error("Tenant is not provisioned.");
     }
-    if (tenant.active === false) {
-      throw new Error("Tenant is suspended.");
+    if (!isTenantLoginAllowed(tenantId)) {
+      throw new Error("Tenant access is suspended.");
     }
 
     const stateValue = crypto.randomBytes(24).toString("base64url");
@@ -5602,15 +5832,6 @@ app.get("/api/auth/google/callback", async (req, res) => {
       throw new Error("Google sign-in request expired. Please try again.");
     }
 
-    const tenantId = normalizeTenantId(oauthState.tenant_id || tenantHint);
-    const tenant = getTenantById(tenantId);
-    if (!tenant) {
-      throw new Error("Tenant is not provisioned.");
-    }
-    if (tenant.active === false) {
-      throw new Error("Tenant is suspended.");
-    }
-
     const tokenPayload = await exchangeGoogleAuthorizationCode({
       code,
       redirectUri: getGoogleRedirectUri(req)
@@ -5626,6 +5847,166 @@ app.get("/api/auth/google/callback", async (req, res) => {
     const usernameFromEmail = buildGoogleUsernameFromEmail(profile.email);
     const mode = (oauthState.mode || "login").toString();
     const linkUsername = normalizeUsername(oauthState.link_username || "");
+    const tenantId = normalizeTenantId(oauthState.tenant_id || tenantHint);
+
+    if (mode === "signup") {
+      const signupState = oauthState.signup || {};
+      const companyName = (signupState.company_name || "").toString().trim();
+      const requestedPlan = normalizePlanName(signupState.plan || STRIPE_DEFAULT_PLAN, STRIPE_DEFAULT_PLAN);
+      const signupTenantId = normalizeTenantId(signupState.tenant_id || tenantId);
+      if (!companyName || companyName.length < 2) {
+        throw new Error("Company name is required.");
+      }
+      if (getTenantById(signupTenantId)) {
+        throw new Error("A workspace for this signup already exists. Please sign in instead.");
+      }
+      if (BILLING_MODE === "paid" && requestedPlan === "free") {
+        throw new Error("Free plan is not available in paid billing mode.");
+      }
+      if (BILLING_MODE === "paid" && (!STRIPE_ENABLED || !stripeClient)) {
+        throw new Error("Signup payment is temporarily unavailable. Stripe is not configured.");
+      }
+      if (BILLING_MODE === "paid" && !isStripeConfiguredForPlan(requestedPlan)) {
+        throw new Error(`Signup plan "${requestedPlan}" is not configured for Stripe.`);
+      }
+
+      let tenantRecord = null;
+      let createdUser = null;
+      try {
+        tenantRecord = createTenantRecord({
+          tenantId: signupTenantId,
+          name: companyName,
+          plan: BILLING_MODE === "paid" ? requestedPlan : "free",
+          active: BILLING_MODE !== "paid"
+        });
+        createdUser = await createGoogleUserWithUniqueUsernameStore({
+          tenantId: signupTenantId,
+          email: profile.email,
+          googleSub: profile.sub,
+          role: "admin"
+        });
+      } catch (createError) {
+        if (tenantRecord) {
+          const tenantsStore = readTenantsStore();
+          delete tenantsStore.items[signupTenantId];
+          writeTenantsStore(tenantsStore);
+          const billingStore = readBillingStore();
+          if (billingStore.items && billingStore.items[signupTenantId]) {
+            delete billingStore.items[signupTenantId];
+            writeBillingStore(billingStore);
+          }
+        }
+        throw createError;
+      }
+
+      const cfg = readConfig(signupTenantId);
+      writeConfig(
+        {
+          ...cfg,
+          office_name: companyName,
+          office_email: profile.email,
+          outbound_copy_email: profile.email
+        },
+        signupTenantId
+      );
+
+      let checkoutUrl = "";
+      let checkoutSessionId = "";
+      let checkoutCustomerId = "";
+      let checkoutSubscriptionId = "";
+      if (BILLING_MODE === "paid") {
+        const priceId = stripePriceIdForPlan(requestedPlan);
+        const signupSuccessPath = `/app?tenant_id=${encodeURIComponent(signupTenantId)}&billing=success`;
+        const signupCancelPath = `/app?tenant_id=${encodeURIComponent(signupTenantId)}&billing=cancel`;
+        const successUrl = buildAbsoluteUrl(
+          req,
+          STRIPE_SUCCESS_URL || buildPublicUrl(PUBLIC_APP_BASE_URL, signupSuccessPath),
+          signupSuccessPath
+        );
+        const cancelUrl = buildAbsoluteUrl(
+          req,
+          STRIPE_CANCEL_URL || buildPublicUrl(PUBLIC_APP_BASE_URL, signupCancelPath),
+          signupCancelPath
+        );
+        const session = await stripeClient.checkout.sessions.create({
+          mode: "subscription",
+          success_url: successUrl,
+          cancel_url: cancelUrl,
+          customer_email: profile.email,
+          client_reference_id: signupTenantId,
+          line_items: [{ price: priceId, quantity: 1 }],
+          allow_promotion_codes: true,
+          metadata: {
+            tenant_id: signupTenantId,
+            plan: requestedPlan,
+            created_via: "public_signup_google"
+          },
+          subscription_data: {
+            metadata: {
+              tenant_id: signupTenantId,
+              plan: requestedPlan,
+              created_via: "public_signup_google"
+            }
+          }
+        });
+        checkoutUrl = (session.url || "").toString();
+        checkoutSessionId = (session.id || "").toString();
+        checkoutCustomerId = session.customer ? session.customer.toString() : "";
+        checkoutSubscriptionId = session.subscription ? session.subscription.toString() : "";
+        applyTenantBillingPatch(signupTenantId, {
+          plan: requestedPlan,
+          status: "incomplete",
+          stripe_customer_id: checkoutCustomerId,
+          stripe_subscription_id: checkoutSubscriptionId,
+          stripe_checkout_session_id: checkoutSessionId
+        });
+      }
+
+      appendAuditEvent({
+        tenantId: signupTenantId,
+        actorUsername: createdUser.username,
+        actorRole: createdUser.role,
+        action: "auth.public_signup.google_created",
+        targetType: "tenant",
+        targetId: tenantRecord.id,
+        ipAddress: clientIp,
+        metadata: {
+          plan: tenantRecord.plan,
+          email: profile.email,
+          requires_payment: Boolean(checkoutUrl)
+        }
+      });
+
+      req.session.google_oauth = null;
+      if (checkoutUrl) {
+        await saveSession(req);
+        return res.redirect(checkoutUrl);
+      }
+
+      req.session.user = sanitizeUser({ ...createdUser, tenant_id: signupTenantId });
+      await saveSession(req);
+      clearAuthAttemptState({ ip: clientIp, username: createdUser.username });
+      appendAuditEvent({
+        tenantId: signupTenantId,
+        actorUsername: createdUser.username,
+        actorRole: createdUser.role,
+        action: "auth.login.success",
+        targetType: "user",
+        targetId: createdUser.id,
+        ipAddress: clientIp,
+        metadata: { method: "google", mode: "signup" }
+      });
+      return redirectToAppAfterAuth(res, { tenantId: signupTenantId });
+    }
+
+    const tenant = getTenantById(tenantId);
+    if (!tenant) {
+      throw new Error("Tenant is not provisioned.");
+    }
+    if (!isTenantLoginAllowed(tenantId)) {
+      throw new Error("Tenant access is suspended.");
+    }
+
     let user = await getGoogleUserByIdentityStore({
       email: profile.email,
       sub: profile.sub,
@@ -5926,10 +6307,13 @@ app.post("/api/faxes/:id/retry", async (req, res) => {
     if (!cfg) {
       return;
     }
+    if (!requireTenantAllowedToSendFax(res, tenantId)) {
+      return;
+    }
 
-    const to = normalizeE164(originalFax.to || "");
-    if (!isE164(to)) {
-      return res.status(400).json({ error: "Original destination number is not valid E.164." });
+    const to = normalizeUsFaxNumber(originalFax.to || "");
+    if (!isUsFaxNumber(to)) {
+      return res.status(400).json({ error: "Original destination number is not a valid US fax number." });
     }
 
     const sourceMediaUrls =
@@ -6048,6 +6432,9 @@ app.post("/api/faxes/:id/retry", async (req, res) => {
 app.post("/api/faxes", async (req, res) => {
   try {
     const tenantId = normalizeTenantId(req.tenant_id);
+    if (!requireTenantAllowedToSendFax(res, tenantId)) {
+      return;
+    }
     const cfg = requireConfig(res, tenantId);
     if (!cfg) {
       return;
@@ -6065,13 +6452,13 @@ app.post("/api/faxes", async (req, res) => {
 
     if (!recipientTokens.length) {
       return res.status(400).json({
-        error: "Provide at least one destination number in E.164 format, for example +17145551234."
+        error: "Provide at least one US destination number (10 digits or +1 E.164), for example 7145551234."
       });
     }
-    const invalidNumber = recipientTokens.find((value) => !isE164(normalizeE164(value)));
+    const invalidNumber = recipientTokens.find((value) => !isUsFaxNumber(normalizeUsFaxNumber(value)));
     if (invalidNumber) {
       return res.status(400).json({
-        error: `Invalid destination number: ${invalidNumber}. Use E.164 format, for example +17145551234.`
+        error: `Invalid destination number: ${invalidNumber}. Only US fax numbers are supported (10-digit or +1 E.164).`
       });
     }
     const maxRecipients = Math.min(
@@ -6415,6 +6802,9 @@ app.post("/api/contacts/import", (req, res) => {
 app.post("/api/faxes/bulk", async (req, res) => {
   try {
     const tenantId = normalizeTenantId(req.tenant_id);
+    if (!requireTenantAllowedToSendFax(res, tenantId)) {
+      return;
+    }
     const cfg = requireConfig(res, tenantId);
     if (!cfg) {
       return;
@@ -7041,6 +7431,115 @@ app.post("/api/admin/billing/portal-session", requireAdmin, async (req, res) => 
   }
 });
 
+app.post("/api/admin/billing/cancel", requireAdmin, async (req, res) => {
+  try {
+    if (!STRIPE_ENABLED || !stripeClient) {
+      return res.status(400).json({ error: "Stripe billing is not enabled on this server." });
+    }
+    const tenantId = normalizeTenantId(req.tenant_id);
+    const billing = getTenantBilling(tenantId);
+    const subscriptionId = (billing?.stripe_subscription_id || "").toString().trim();
+    if (!subscriptionId) {
+      return res.status(400).json({ error: "No Stripe subscription is linked yet." });
+    }
+
+    const subscription = await stripeClient.subscriptions.retrieve(subscriptionId, {
+      expand: ["latest_invoice.payment_intent.latest_charge"]
+    });
+    const nowMs = Date.now();
+    const createdMs = Number(subscription?.created || 0) * 1000;
+    const withinRefundWindow = Boolean(createdMs && nowMs - createdMs <= STRIPE_REFUND_WINDOW_MS);
+    const customerId = (subscription?.customer || billing?.stripe_customer_id || "").toString().trim();
+
+    if (withinRefundWindow) {
+      const paymentIntent = subscription?.latest_invoice?.payment_intent;
+      const charge = paymentIntent?.latest_charge;
+      let refund = null;
+      if (charge && typeof charge === "object" && charge.id) {
+        const fullyRefunded = Number(charge.amount_refunded || 0) >= Number(charge.amount || 0);
+        if (!fullyRefunded) {
+          refund = await stripeClient.refunds.create({
+            charge: charge.id,
+            reason: "requested_by_customer",
+            metadata: {
+              tenant_id: tenantId,
+              policy: `refund_within_${STRIPE_REFUND_WINDOW_DAYS}_days`
+            }
+          });
+        }
+      }
+      const canceled = await stripeClient.subscriptions.cancel(subscriptionId, {
+        prorate: false,
+        invoice_now: false
+      });
+      const next = applyTenantBillingPatch(tenantId, {
+        status: "canceled",
+        stripe_customer_id: customerId,
+        stripe_subscription_id: subscriptionId,
+        stripe_price_id: (canceled?.items?.data?.[0]?.price?.id || billing?.stripe_price_id || "").toString().trim(),
+        stripe_current_period_end: ""
+      });
+      appendAuditEvent({
+        tenantId,
+        actorUsername: req.session.user?.username || "unknown",
+        actorRole: req.session.user?.role || "admin",
+        action: "admin.billing.canceled_refunded",
+        targetType: "billing",
+        targetId: tenantId,
+        ipAddress: getAuthClientIp(req),
+        metadata: {
+          stripe_subscription_id: subscriptionId,
+          refund_id: refund?.id || "",
+          refund_window_days: STRIPE_REFUND_WINDOW_DAYS
+        }
+      });
+      return res.json({
+        ok: true,
+        action: "refunded_and_canceled",
+        refund_window_days: STRIPE_REFUND_WINDOW_DAYS,
+        refund_id: refund?.id || "",
+        billing: next
+      });
+    }
+
+    const updated = await stripeClient.subscriptions.update(subscriptionId, {
+      cancel_at_period_end: true,
+      proration_behavior: "none"
+    });
+    const periodEndIso = Number(updated?.current_period_end || 0)
+      ? new Date(Number(updated.current_period_end) * 1000).toISOString()
+      : "";
+    const next = applyTenantBillingPatch(tenantId, {
+      status: mapStripeSubscriptionStatus(updated.status),
+      stripe_customer_id: customerId,
+      stripe_subscription_id: subscriptionId,
+      stripe_price_id: (updated?.items?.data?.[0]?.price?.id || billing?.stripe_price_id || "").toString().trim(),
+      stripe_current_period_end: periodEndIso
+    });
+    appendAuditEvent({
+      tenantId,
+      actorUsername: req.session.user?.username || "unknown",
+      actorRole: req.session.user?.role || "admin",
+      action: "admin.billing.cancel_at_period_end",
+      targetType: "billing",
+      targetId: tenantId,
+      ipAddress: getAuthClientIp(req),
+      metadata: {
+        stripe_subscription_id: subscriptionId,
+        current_period_end: periodEndIso
+      }
+    });
+    return res.json({
+      ok: true,
+      action: "cancel_at_period_end",
+      current_period_end: periodEndIso,
+      billing: next
+    });
+  } catch (error) {
+    return res.status(400).json({ error: error.message || "Could not cancel subscription." });
+  }
+});
+
 app.get("/api/admin/tenant", requireAdmin, (req, res) => {
   const tenantId = normalizeTenantId(req.tenant_id);
   const tenants = readTenantsStore();
@@ -7124,9 +7623,9 @@ app.patch("/api/admin/settings", requireAdmin, (req, res) => {
       next.telnyx_connection_id = (req.body.telnyx_connection_id || "").trim();
     }
     if (req.body.telnyx_from_number !== undefined) {
-      const value = normalizeE164(req.body.telnyx_from_number);
-      if (value && !isE164(value)) {
-        return res.status(400).json({ error: "TELNYX from number must be E.164 format." });
+      const value = normalizeUsFaxNumber(req.body.telnyx_from_number);
+      if (req.body.telnyx_from_number && !value) {
+        return res.status(400).json({ error: "TELNYX from number must be a US number (10 digits or +1 E.164)." });
       }
       next.telnyx_from_number = value;
     }
@@ -7148,9 +7647,9 @@ app.patch("/api/admin/settings", requireAdmin, (req, res) => {
       next.office_name = (req.body.office_name || "").trim() || "Eyecare Care of Orange County";
     }
     if (req.body.office_fax_number !== undefined) {
-      const value = normalizeE164(req.body.office_fax_number);
-      if (value && !isE164(value)) {
-        return res.status(400).json({ error: "office_fax_number must be E.164 format." });
+      const value = normalizeUsFaxNumber(req.body.office_fax_number);
+      if (req.body.office_fax_number && !value) {
+        return res.status(400).json({ error: "office_fax_number must be a US number (10 digits or +1 E.164)." });
       }
       next.office_fax_number = value || "+17145580642";
     }

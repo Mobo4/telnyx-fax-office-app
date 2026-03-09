@@ -97,7 +97,7 @@
                 <button id="send-fax-primary-btn" type="submit">Send Fax</button>
               </div>
             </div>
-            <p class="helper-text">Use 10-digit US numbers or E.164. Separate multiple recipients with comma/new line.</p>
+            <p class="helper-text">Only US fax numbers are supported. Use 10-digit US numbers or +1 E.164. Separate recipients with comma/new line.</p>
 
             <div id="recipient-chips" class="chips-row"></div>
 
@@ -217,7 +217,7 @@
               <label for="setting_connection_id">Telnyx Connection ID</label>
               <input id="setting_connection_id" name="telnyx_connection_id" />
 
-              <label for="setting_from_number">Telnyx From Number (E.164)</label>
+              <label for="setting_from_number">Telnyx From Number (US)</label>
               <input id="setting_from_number" name="telnyx_from_number" placeholder="+17148807060" />
 
               <label for="setting_fax_app_id">Telnyx Fax Application ID</label>
@@ -243,11 +243,11 @@
                 placeholder="Eyecare Care of Orange County"
               />
 
-              <label for="setting_office_fax_number">Office Fax Number (E.164)</label>
+              <label for="setting_office_fax_number">Office Fax Number (US)</label>
               <input
                 id="setting_office_fax_number"
                 name="office_fax_number"
-                placeholder="+17145580642"
+                placeholder="7145580642 or +17145580642"
               />
 
               <label for="setting_office_email">Office Email</label>
@@ -344,7 +344,7 @@
           <section class="card">
             <h2>Billing (Stripe)</h2>
             <p class="helper-text">
-              Start or manage paid subscription in Stripe. Cancellation is handled in Stripe customer portal.
+              Start or renew paid subscription in Stripe. Cancel policy: refund only if canceled within 2 days of subscription start; after that, subscription remains active until period end and then stops auto-renew.
             </p>
             <div class="subtle-card billing-summary">
               <p><strong>Current Plan:</strong> <span id="billing_current_plan">-</span></p>
@@ -363,8 +363,9 @@
               </select>
 
               <div class="row-actions">
-                <button type="button" id="billing_checkout_btn">Start / Upgrade Subscription</button>
-                <button type="button" id="billing_portal_btn" class="secondary">Manage / Cancel in Stripe</button>
+                <button type="button" id="billing_checkout_btn">Start / Renew Subscription</button>
+                <button type="button" id="billing_cancel_btn" class="secondary">Cancel Subscription</button>
+                <button type="button" id="billing_portal_btn" class="secondary">Manage Billing in Stripe</button>
               </div>
             </form>
             <p id="billing-message" class="message"></p>
@@ -455,8 +456,8 @@
                 <label for="contact_name">Name</label>
                 <input id="contact_name" name="name" placeholder="Dr Office Front Desk" required />
 
-                <label for="contact_fax">Fax Number (E.164)</label>
-                <input id="contact_fax" name="fax_number" placeholder="+17145551234" required />
+                <label for="contact_fax">Fax Number (US)</label>
+                <input id="contact_fax" name="fax_number" placeholder="7145551234 or +17145551234" required />
 
                 <label for="contact_tags">Tags (comma separated)</label>
                 <input id="contact_tags" name="tags" placeholder="billing, referral, urgent" />

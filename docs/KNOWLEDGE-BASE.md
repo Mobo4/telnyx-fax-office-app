@@ -13,6 +13,8 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - `/Users/alex/Documents/Projects/Telnyx/docs/PRD-commercial-saas-hipaa.md`
 - `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-commercial-saas-hipaa.md`
 - `/Users/alex/Documents/Projects/Telnyx/docs/VERSIONING-AND-BRANCHING.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/USER-MANUAL.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/DEPLOY-VERCEL-MARKETING.md`
 - `/Users/alex/Documents/Projects/Telnyx/db/migrations/001_commercial_core.sql`
 - `/Users/alex/Documents/Projects/Telnyx/infra/docker-compose.commercial.yml`
 
@@ -46,6 +48,8 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - Optional webhook signature verification for Telnyx events.
 - v2 commercial branch adds tenant-aware request scoping (`X-Tenant-Id`), immutable audit logs, billing/plan admin APIs, and idempotent outbound send.
 - v2 now requires explicit tenant provisioning; unknown tenant IDs are rejected instead of auto-created.
+- Public marketing page (`/`) was redesigned with updated positioning, pricing cards, policy note, and signup modal flow.
+- Marketing runtime supports split-host deploy config via `/public/marketing.config.js`.
 
 ## API Surface (primary)
 - Auth: `/api/auth/login`, `/api/auth/logout`, `/api/auth/me`
@@ -76,6 +80,8 @@ Operational reference for architecture, workflow behavior, limits, and known edg
   - `/api/admin/tenants`
   - `/api/admin/users/:username/mfa`
   - `/api/webhooks/stripe` (open route, Stripe signature validated)
+- Marketing runtime config:
+  - `/marketing.config.js` (`apiBaseUrl`, `appBaseUrl`)
 
 ## Send Workflow (current)
 1. User fills recipients.
@@ -136,6 +142,8 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - `/api/uploads/batch` enforces max files and per-file limit.
 - `/api/faxes` now rejects invalid/non-HTTPS media URLs explicitly.
 - No silent media URL dropping.
+- `/uploads/*` direct static access is blocked (`404`) to avoid accidental PHI document exposure.
+- `/api/public/*` supports configurable CORS allowlist via `PUBLIC_SIGNUP_CORS_ORIGINS`.
 - Telnyx API calls are timeout-bounded (`TELNYX_HTTP_TIMEOUT_MS`, default 5000ms) to avoid hanging history UI.
 - `/api/faxes` now includes `sync_warning` when Telnyx sync fails, while still returning local/archived history.
 - Login attempts are throttled by IP and temporarily lock per username after repeated failures.
@@ -270,6 +278,9 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - Route split:
   - `/` serves marketing website with signup modal.
   - `/app` serves the fax workspace UI.
+- Supported split-host mode:
+  - marketing on Vercel
+  - API + `/app` on Render
 
 ## Known Environment Caveats
 - If app runs only on `http://localhost`, Telnyx cannot fetch upload files, so real outbound fax sends fail.
@@ -278,6 +289,9 @@ Operational reference for architecture, workflow behavior, limits, and known edg
 - Render free sleep cannot be fully fixed in app code; use non-sleeping plan or external keepalive pings to `/api/health`.
 - D1 persistence keeps users across restarts, but does not prevent free-tier sleep delays for inbound webhooks.
 - If webhook signature validation is enabled without a valid public key, inbound webhook updates will fail with `401`.
+- Vercel deployment is not currently a drop-in target for this codebase because the app expects a long-running Node server with local/session file persistence.
+- Use split-host deployment guide: `/Users/alex/Documents/Projects/Telnyx/docs/DEPLOY-VERCEL-MARKETING.md`.
+- Current split-host Vercel deployment exists but is behind Vercel deployment protection (`401`) and must be made public before production cutover.
 
 ## Gaps / Next Hardening
 - Add automated integration tests for send success/failure paths.

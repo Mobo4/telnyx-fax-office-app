@@ -78,6 +78,7 @@ const emailGatewayTokenState = document.getElementById("email-gateway-token-stat
 const billingForm = document.getElementById("billing-form");
 const billingPlanSelect = document.getElementById("billing_plan_select");
 const billingCheckoutBtn = document.getElementById("billing_checkout_btn");
+const billingCancelBtn = document.getElementById("billing_cancel_btn");
 const billingPortalBtn = document.getElementById("billing_portal_btn");
 const billingMessage = document.getElementById("billing-message");
 const billingCurrentPlan = document.getElementById("billing_current_plan");
@@ -255,7 +256,7 @@ function normalizePhoneInput(value) {
   if (cleaned.startsWith("+")) {
     const digits = cleaned.slice(1).replace(/\D/g, "");
     const e164 = digits ? `+${digits}` : "";
-    return isE164(e164) ? e164 : "";
+    return isUsFaxNumber(e164) ? e164 : "";
   }
 
   const digits = cleaned.replace(/\D/g, "");
@@ -272,13 +273,17 @@ function isE164(value) {
   return /^\+[1-9]\d{7,14}$/.test((value || "").toString());
 }
 
+function isUsFaxNumber(value) {
+  return /^\+1\d{10}$/.test((value || "").toString());
+}
+
 function isCompletePhoneToken(value) {
   const raw = (value || "").toString().trim();
   if (!raw) return false;
 
   if (raw.includes("+")) {
     const normalized = normalizePhoneInput(raw);
-    return Boolean(normalized && isE164(normalized));
+    return Boolean(normalized && isUsFaxNumber(normalized));
   }
 
   const digits = raw.replace(/\D/g, "");
@@ -302,7 +307,7 @@ function parseRecipientsFromInput(value) {
 
   tokens.forEach((token) => {
     const normalized = normalizePhoneInput(token);
-    if (normalized && isE164(normalized)) {
+    if (normalized && isUsFaxNumber(normalized)) {
       valid.push(normalized);
     } else {
       invalid.push(token);
@@ -730,7 +735,7 @@ function setRecipientsFromInput(value, { syncInput = true } = {}) {
 
 function addRecipient(number, meta = null) {
   const normalized = normalizePhoneInput(number);
-  if (!normalized || !isE164(normalized)) return;
+  if (!normalized || !isUsFaxNumber(normalized)) return;
   state.recipients = Array.from(new Set([...state.recipients, normalized]));
   if (meta?.name || meta?.contact_id) {
     state.recipientMeta[normalized] = {
@@ -1304,6 +1309,9 @@ function applyBillingUiState() {
   if (billingCheckoutBtn) {
     billingCheckoutBtn.disabled = !stripeEnabled;
   }
+  if (billingCancelBtn) {
+    billingCancelBtn.disabled = !stripeEnabled;
+  }
   if (billingPortalBtn) {
     billingPortalBtn.disabled = !stripeEnabled;
   }
@@ -1616,7 +1624,7 @@ sendForm.addEventListener("submit", async (event) => {
     }
     if (invalidRecipient) {
       throw new Error(
-        `Invalid phone number format: ${invalidRecipient}. Use US 10-digit format (7145580642) or full E.164 international format (example: +17145551234, +442071838750).`
+        `Invalid phone number format: ${invalidRecipient}. Only US fax numbers are supported (example: 7145580642 or +17145580642).`
       );
     }
     if (fileValidationError) {
@@ -2046,6 +2054,9 @@ if (billingCheckoutBtn) {
     setMessage(billingMessage, "");
     const plan = (billingPlanSelect?.value || "starter").toString().trim().toLowerCase();
     billingCheckoutBtn.disabled = true;
+    if (billingCancelBtn) {
+      billingCancelBtn.disabled = true;
+    }
     if (billingPortalBtn) {
       billingPortalBtn.disabled = true;
     }
@@ -2061,6 +2072,45 @@ if (billingCheckoutBtn) {
       window.location.assign(body.checkout_url);
     } catch (error) {
       setMessage(billingMessage, error.message || "Could not start Stripe checkout.");
+      applyBillingUiState();
+    }
+  });
+}
+
+if (billingCancelBtn) {
+  billingCancelBtn.addEventListener("click", async () => {
+    setMessage(billingMessage, "");
+    const confirmed = window.confirm(
+      "Cancel subscription now?\n\nPolicy: within 2 days of start, we issue refund and cancel immediately. After 2 days, cancellation is scheduled at period end."
+    );
+    if (!confirmed) {
+      return;
+    }
+    billingCancelBtn.disabled = true;
+    if (billingCheckoutBtn) {
+      billingCheckoutBtn.disabled = true;
+    }
+    if (billingPortalBtn) {
+      billingPortalBtn.disabled = true;
+    }
+    try {
+      const body = await api("/api/admin/billing/cancel", {
+        method: "POST"
+      });
+      if ((body.action || "") === "refunded_and_canceled") {
+        setMessage(
+          billingMessage,
+          `Subscription canceled and refunded (${body.refund_id || "refund queued"}).`
+        );
+      } else {
+        setMessage(
+          billingMessage,
+          `Subscription will remain active until ${formatDate(body.current_period_end)} and then stop auto-renew.`
+        );
+      }
+      await Promise.all([loadBillingSettings(), loadAdminDashboard()]);
+    } catch (error) {
+      setMessage(billingMessage, error.message || "Could not cancel subscription.");
       applyBillingUiState();
     }
   });

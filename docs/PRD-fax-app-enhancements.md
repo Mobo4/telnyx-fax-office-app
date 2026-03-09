@@ -6,6 +6,8 @@
 - Scope: security hardening (webhook verification, signed media delivery, login throttling, queue recovery, durable sessions).
 - Scope (v2 branch extension): tenant-scoped commercial controls (audit trail, plan limits, idempotent send, billing/mfa admin APIs) on `codex/v2-commercial`.
 - Scope (2026-02-23): Google OAuth login option with tenant-scoped shared account membership.
+- Scope (2026-03-08): public marketing site redesign, stricter upload-surface hardening, US-number admin setting enforcement, operator manual publication.
+- Scope (2026-03-09): split-host deployment support (Vercel marketing + Render API/app) with configurable public base URLs and signup CORS allowlist.
 
 ## Product Goal
 Provide a secure browser-based fax system for Eyecare Care of Orange County with reliable outbound sending, clear confirmation feedback, and admin-controlled settings.
@@ -164,6 +166,7 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - `/api/faxes` validates media URLs as public `https://` links (no silent filtering).
 - Errors are explicit and user-readable.
 - Uploaded files are not directly public static assets; use signed expiring media links.
+- Direct `GET /uploads/*` access must return 404 and never expose fax files.
 - Telnyx webhook payloads should be signature-verified when key is configured.
 - `/api/faxes/:id/refresh` only refreshes fax IDs already owned by active tenant.
 - `/api/faxes/:id/retry` only retries failed outbound faxes owned by active tenant.
@@ -178,6 +181,7 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Production requires a public HTTPS host for webhook and document retrieval.
 - Supported now: Render Node service (current live baseline).
 - Optional migration path: Cloudflare (Workers/Containers) after compatibility testing.
+- Supported split-host mode: Vercel hosts marketing page while Render continues serving `/app` and `/api`.
 - Billing runs in free mode by default (`BILLING_MODE=free`); paid lifecycle is deferred but API shape remains.
 - Inbound flow must run on non-sleeping service tier to avoid missed/delayed webhook processing.
 - Telnyx inbound email recipient remains enabled as backup.
@@ -188,6 +192,9 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - Route split:
   - `/` public marketing + signup
   - `/app` authenticated fax workspace
+- Public marketing page should preserve existing modal/signup IDs used by `public/marketing.js` to avoid checkout flow regressions.
+- Marketing runtime must support configurable API/app bases (`public/marketing.config.js`) for cross-domain deploys.
+- Public signup API must enforce origin allowlist via `PUBLIC_SIGNUP_CORS_ORIGINS`.
 
 ## Non-Functional Requirements
 - Clear error messages for blocked send conditions.
@@ -209,6 +216,8 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - History still renders when Telnyx sync is down, with non-blocking warning.
 - Non-admin users cannot open/settings panel or call admin settings endpoints.
 - Server rejects non-HTTPS media URLs with explicit error.
+- Direct `/uploads/*` path requests return 404.
+- CORS preflight for `POST /api/public/signup` returns allow headers for configured origins.
 - PRD and knowledge docs include hosting decision and backup inbound path.
 - Webhook route rejects invalid signatures when verification is enabled.
 - Unknown tenant login attempts are rejected (no auto-provision side effect).
@@ -245,3 +254,4 @@ Provide a secure browser-based fax system for Eyecare Care of Orange County with
 - End-to-end send verification still depends on real Telnyx credentials/network and destination fax behavior.
 - Free/idle hosting plans can impact inbound webhook timing and reliability.
 - Render free sleep can still interrupt webhook availability unless plan/keepalive is configured.
+- Full e2e visual QA of redesigned marketing page on live Render URL is still required after deploy.

@@ -6,6 +6,7 @@ data/users.json
 data/config.json
 data/contacts.json
 data/bulk_jobs.json
+data/fax_retry_queue.json
 data/tenants.json
 data/billing.json
 data/audit_events.json

@@ -3,106 +3,117 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Refract Fax | HIPAA-Ready Online Fax for Clinics and Legal Teams</title>
+    <title>Refract Fax | HIPAA-Ready Business Fax Platform</title>
     <meta
       name="description"
-      content="Secure cloud fax software with delivery verification, team controls, and Stripe billing. Built for clinics, law offices, and healthcare operations."
+      content="Refract Fax is a secure, browser-based fax platform for clinics and legal teams with verified delivery, team controls, and Stripe billing."
     />
     <meta name="robots" content="index,follow" />
     <link rel="canonical" href="https://telnyx-fax-webhook.onrender.com/" />
-    <meta property="og:title" content="Refract Fax | Secure Office Fax Platform" />
-    <meta
-      property="og:description"
-      content="Send and track faxes from browser with audit logs, retry controls, and admin security."
-    />
+    <meta property="og:title" content="Refract Fax | Secure Online Fax for Teams" />
+    <meta property="og:description" content="Send and track faxes with team controls, role-based permissions, and audit visibility." />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://telnyx-fax-webhook.onrender.com/" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="/marketing.css" />
   </head>
   <body>
-    <div class="bg-orb orb-a" aria-hidden="true"></div>
-    <div class="bg-orb orb-b" aria-hidden="true"></div>
+    <div class="bg-shape shape-a" aria-hidden="true"></div>
+    <div class="bg-shape shape-b" aria-hidden="true"></div>
 
-    <header class="topbar">
+    <header class="topbar shell">
       <a class="brand" href="/">
         <span class="brand-mark">RF</span>
         <span>Refract Fax</span>
       </a>
       <nav class="nav-actions">
-        <a class="btn ghost" href="/app">Sign In</a>
-        <button id="open-signup-top" class="btn solid" type="button">Start Free</button>
+        <a class="btn ghost" href="/app" data-app-link>Sign In</a>
+        <button id="open-signup-top" class="btn solid" type="button">Start Trial</button>
       </nav>
     </header>
 
     <main>
       <section class="hero shell">
-        <div class="hero-copy glass">
-          <p class="kicker">Secure Fax Infrastructure</p>
-          <h1>HIPAA-focused online fax for teams that need proof, not guesswork.</h1>
-          <p>
-            Browser-based fax workspace with delivery verification, failure reasons, retry controls,
-            address book, and admin governance.
+        <div class="hero-main glass">
+          <p class="kicker">US-Only HIPAA Workflow</p>
+          <h1>Professional fax operations without legacy machines.</h1>
+          <p class="hero-copy">
+            Centralize outbound and inbound faxing in one browser app with team controls, delivery status,
+            retry actions, and audit-ready operations.
           </p>
           <div class="cta-row">
-            <button id="open-signup-hero" class="btn solid" type="button">Create Account</button>
-            <a class="btn ghost" href="/app">Already have an account</a>
+            <button id="open-signup-hero" class="btn solid" type="button">Create Workspace</button>
+            <a class="btn ghost" href="/app" data-app-link>Open Existing Workspace</a>
           </div>
-          <p class="micro">No desktop install. Works on Mac and Windows browsers.</p>
+          <div class="hero-metrics">
+            <div>
+              <strong>99.9%</strong>
+              <span>Platform uptime target</span>
+            </div>
+            <div>
+              <strong>US Only</strong>
+              <span>Destination policy enforced</span>
+            </div>
+            <div>
+              <strong>Role Based</strong>
+              <span>Admin, sender, viewer controls</span>
+            </div>
+          </div>
         </div>
 
-        <aside class="hero-panel glass">
-          <h2>Built for</h2>
+        <aside class="hero-side glass">
+          <h2>Operational clarity</h2>
           <ul>
-            <li>Medical and dental clinics</li>
-            <li>Law firms and litigation teams</li>
-            <li>Revenue-cycle and referrals</li>
-            <li>Multi-user office operations</li>
+            <li>Delivery verification + failure reasons</li>
+            <li>Retry same recipient from history</li>
+            <li>Address book + bulk-by-tag operations</li>
+            <li>Admin billing and usage dashboard</li>
           </ul>
-          <p class="micro">Uptime and storage depend on your hosting plan.</p>
+          <p class="micro">Designed for clinics, law firms, and high-compliance office workflows.</p>
         </aside>
       </section>
 
-      <section class="shell section-grid">
+      <section class="shell feature-strip">
         <article class="feature glass">
-          <h3>Reliable delivery workflow</h3>
-          <p>Real status tracking, manual poll, and failed-fax retry from history.</p>
+          <h3>Send Fast</h3>
+          <p>Upload PDF/TIFF files, choose one or many recipients, and queue delivery instantly.</p>
         </article>
         <article class="feature glass">
-          <h3>Office-first UX</h3>
-          <p>Multi-recipient send, contacts with tags, top frequent list, and CSV import.</p>
+          <h3>Track Clearly</h3>
+          <p>Separate Sent and Received histories with status polling and event-level reasoning.</p>
         </article>
         <article class="feature glass">
-          <h3>Admin control</h3>
-          <p>Role-based access, settings lock-down, webhook verification, and audit visibility.</p>
+          <h3>Control Access</h3>
+          <p>Admin-governed settings and user controls built for office segregation of duties.</p>
         </article>
       </section>
 
       <section id="pricing" class="shell pricing">
         <div class="section-head">
           <p class="kicker">Pricing</p>
-          <h2>Volume discounts built in as you move up tiers.</h2>
+          <h2>Volume incentives with transparent overage rules.</h2>
           <p>
-            Every plan includes monthly outbound and inbound page allowance. If usage goes over, overage is billed per
-            page at the listed rate. Higher tiers include more pages and lower overage rates.
+            Every plan includes monthly outbound and inbound page allowances. Overage is billed per page and shown in
+            the admin usage dashboard.
           </p>
         </div>
+
         <div class="pricing-grid">
           <article class="price-card glass" data-plan="starter">
             <h3>Starter</h3>
-            <p class="price">$18.88<span>/month</span></p>
+            <p class="price">$19.99<span>/month</span></p>
             <ul>
-              <li>Included sent pages: 300</li>
-              <li>Included received pages: 300</li>
+              <li>300 sent pages included</li>
+              <li>300 received pages included</li>
               <li>Overage: $0.021/page</li>
-              <li>Best for single-office teams</li>
+              <li>1 fax number included</li>
             </ul>
-            <button class="btn solid plan-select" data-plan="starter" type="button">Start Starter</button>
+            <button class="btn solid plan-select" data-plan="starter" type="button">Choose Starter</button>
           </article>
 
           <article class="price-card glass featured" data-plan="pro">
@@ -110,34 +121,32 @@
             <h3>Pro</h3>
             <p class="price">$49.00<span>/month</span></p>
             <ul>
-              <li>Included sent pages: 1,800</li>
-              <li>Included received pages: 1,800</li>
+              <li>1,800 sent pages included</li>
+              <li>1,800 received pages included</li>
               <li>Overage: $0.018/page</li>
-              <li>~14% lower overage rate vs Starter</li>
-              <li>Best for busy clinic groups</li>
+              <li>2+ numbers supported (add-on)</li>
             </ul>
-            <button class="btn solid plan-select" data-plan="pro" type="button">Start Pro</button>
+            <button class="btn solid plan-select" data-plan="pro" type="button">Choose Pro</button>
           </article>
 
           <article class="price-card glass" data-plan="enterprise">
             <h3>Enterprise</h3>
             <p class="price">$149.00<span>/month</span></p>
             <ul>
-              <li>Included sent pages: 9,000</li>
-              <li>Included received pages: 9,000</li>
+              <li>9,000 sent pages included</li>
+              <li>9,000 received pages included</li>
               <li>Overage: $0.015/page</li>
-              <li>~29% lower overage rate vs Starter</li>
-              <li>Best for high-volume operations</li>
+              <li>Advanced team scaling</li>
             </ul>
-            <button class="btn solid plan-select" data-plan="enterprise" type="button">Start Enterprise</button>
+            <button class="btn solid plan-select" data-plan="enterprise" type="button">Choose Enterprise</button>
           </article>
         </div>
+
         <div class="policy-note glass">
-          <h3>Page Count Policy</h3>
+          <h3>Billing policy</h3>
           <p>
-            Pages are counted per fax transmission. One 3-page document sent to 2 recipients counts as 6 outbound
-            pages. Inbound pages are counted when fax delivery is confirmed. Overages are shown in your admin
-            dashboard every billing month.
+            Subscriptions auto-renew monthly. Cancellation within 2 days of start is refund-eligible. After 2 days,
+            cancellation is set to period-end and auto-renew stops.
           </p>
         </div>
       </section>
@@ -145,23 +154,23 @@
       <section class="shell faq glass">
         <h2>FAQ</h2>
         <details>
-          <summary>Can I cancel from Stripe directly?</summary>
-          <p>Yes. Every paid account can open Stripe Customer Portal and cancel there.</p>
+          <summary>Can we cancel ourselves?</summary>
+          <p>Yes. Admin users can cancel from the billing controls or Stripe customer portal.</p>
         </details>
         <details>
-          <summary>Do I need to install software?</summary>
-          <p>No. This is browser-based and works from your office web browser.</p>
+          <summary>Do we need local install?</summary>
+          <p>No desktop installation is required. The platform runs in browser.</p>
         </details>
         <details>
-          <summary>How does signup work?</summary>
-          <p>Create workspace credentials, continue to Stripe payment, then sign in once the subscription activates.</p>
+          <summary>Do you support international faxing?</summary>
+          <p>No. This deployment enforces US-only outbound fax destinations.</p>
         </details>
       </section>
     </main>
 
     <footer class="shell footer">
       <p>Refract Fax</p>
-      <a href="/app">Sign In</a>
+      <a href="/app" data-app-link>Sign In</a>
     </footer>
 
     <div id="signup-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="signup-title">
@@ -174,6 +183,9 @@
         <form id="signup-form">
           <label for="signup_company">Company Name</label>
           <input id="signup_company" name="company_name" placeholder="Eyecare Care of Orange County" required />
+
+          <label for="signup_tenant_id">Workspace ID (optional)</label>
+          <input id="signup_tenant_id" name="tenant_id" placeholder="your-company-id" />
 
           <label for="signup_email">Admin Email</label>
           <input id="signup_email" name="email" type="email" placeholder="owner@company.com" required />
@@ -201,12 +213,14 @@
           </label>
 
           <button id="signup_submit_btn" class="btn solid" type="submit">Create Account and Continue to Payment</button>
+          <button id="signup_google_btn" class="btn ghost signup-google-btn" type="button">Continue With Google</button>
         </form>
 
         <p id="signup-message" class="message"></p>
       </div>
     </div>
 
+    <script src="/marketing.config.js"></script>
     <script src="/marketing.js"></script>
   </body>
 </html>

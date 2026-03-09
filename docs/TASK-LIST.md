@@ -62,6 +62,15 @@
 - [x] Add tier incentive pricing (higher included pages + lower overage rates on higher plans).
 - [x] Add admin dashboard API/UI for usage and operational metrics.
 - [x] Add billing page-count policy and estimated overage visibility in admin area and public signup page.
+- [x] Redesign public marketing website with cleaner pricing/signup UX while preserving existing signup API wiring.
+- [x] Block direct static access to `/uploads/*` and force signed media URL usage only.
+- [x] Enforce US-number validation for admin from-number and office fax number settings.
+- [x] Add end-user operations manual for office/admin workflows and troubleshooting.
+- [x] Add split-host marketing runtime config (`marketing.config.js`) to support Vercel marketing + Render API/app.
+- [x] Add CORS allowlist middleware for cross-origin public signup (`PUBLIC_SIGNUP_CORS_ORIGINS`).
+- [x] Add split-host redirect/base URL controls (`PUBLIC_APP_BASE_URL`, `PUBLIC_MARKETING_BASE_URL`).
+- [x] Add deployment runbook for Vercel marketing split.
+- [x] Deploy marketing site to Vercel (`alexander-bonakdars-projects/public`) for split-host rollout.
 
 ## Next Tasks
 - [ ] Execute commercial SaaS program in `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST-commercial-saas-hipaa.md`.
@@ -79,3 +88,5 @@
 - [ ] Add automated integration tests for Google auth callback success/failure flows.
 - [ ] Add provider-native signature verification for Mailgun/SendGrid inbound email webhooks.
 - [ ] Add admin UI table for recent email gateway requests (`/api/admin/email-requests`).
+- [ ] Execute live Vercel split deploy and production smoke test checklist from `docs/DEPLOY-VERCEL-MARKETING.md`.
+- [ ] Disable Vercel deployment protection for production marketing domain (currently returns `401`).

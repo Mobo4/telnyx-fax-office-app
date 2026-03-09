@@ -93,6 +93,10 @@ Set:
   - `STRIPE_DEFAULT_PLAN` (`starter`, `pro`, `enterprise`)
   - `STRIPE_PRICE_STARTER_MONTHLY`, `STRIPE_PRICE_PRO_MONTHLY`, `STRIPE_PRICE_ENTERPRISE_MONTHLY`
   - Optional URL overrides: `STRIPE_SUCCESS_URL`, `STRIPE_CANCEL_URL`, `STRIPE_PORTAL_RETURN_URL`
+  - Optional split-host overrides:
+    - `PUBLIC_APP_BASE_URL` (absolute URL for `/app` redirects/login links)
+    - `PUBLIC_MARKETING_BASE_URL` (absolute URL for marketing page redirects)
+    - `PUBLIC_SIGNUP_CORS_ORIGINS` (comma-separated allowed origins for `POST /api/public/signup`)
 - Optional Cloudflare D1 persistence (users + settings/contacts/fax history snapshots):
   - `CLOUDFLARE_ACCOUNT_ID`
   - `CLOUDFLARE_D1_DATABASE_ID`
@@ -118,6 +122,10 @@ Open:
 
 - `http://localhost:10000` (public marketing + signup page)
 - `http://localhost:10000/app` (fax app login/workspace)
+
+Vercel split deployment support:
+- Marketing page can point to a remote API/app domain via `/public/marketing.config.js`.
+- Set `apiBaseUrl` and `appBaseUrl` there when hosting marketing on Vercel and API/app on Render.
 
 ## 4. Login and roles
 
@@ -166,6 +174,20 @@ Tenant provisioning notes:
 3. Put `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in your `.env`.
 4. Set `GOOGLE_AUTH_ENABLED=true`.
 5. Restart app and confirm login page shows `Sign In With Google`.
+
+### 4.2 Vercel Marketing + Render API/App (recommended split)
+
+1. Keep this Node server deployed on Render.
+2. Set Render env:
+   - `PUBLIC_APP_BASE_URL=https://telnyx-fax-webhook.onrender.com`
+   - `PUBLIC_MARKETING_BASE_URL=https://<your-vercel-domain>`
+   - `PUBLIC_SIGNUP_CORS_ORIGINS=https://<your-vercel-domain>,https://www.<your-vercel-domain>`
+3. In `/public/marketing.config.js`, set:
+   - `apiBaseUrl: "https://telnyx-fax-webhook.onrender.com"`
+   - `appBaseUrl: "https://telnyx-fax-webhook.onrender.com"`
+4. Deploy only the marketing site to Vercel (Root Directory: `public`).
+5. Keep Google OAuth redirect URI on Render:
+   - `https://telnyx-fax-webhook.onrender.com/api/auth/google/callback`
 
 ## 5. Telnyx webhook URL
 

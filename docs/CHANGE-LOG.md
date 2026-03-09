@@ -389,3 +389,79 @@
 - Frequent-contact chips depend on successful queue events.
 - Recipient selection now supports manual numbers, autocomplete, and popup selection.
 - Telnyx media URLs must be public HTTPS. Localhost file URLs are not fetchable by Telnyx.
+
+## 2026-03-08
+### Completed
+- Redesigned public marketing website (`/`) with refreshed layout, pricing cards, FAQ, and cleaner signup modal experience.
+- Preserved signup flow compatibility by keeping required JS hook IDs used by `public/marketing.js`.
+- Added hard block for direct static `/uploads/*` access so uploaded fax docs are not exposed via static serving.
+- Enforced US-only validation on admin settings for `telnyx_from_number` and `office_fax_number`.
+- Updated admin settings labels/placeholders in app UI to reflect US-only number policy.
+- Added end-user manual: `/Users/alex/Documents/Projects/Telnyx/docs/USER-MANUAL.md`.
+- Updated continuity docs (`PRD`, `KNOWLEDGE-BASE`, `TASK-LIST`) for this session.
+
+### Validation
+- `node --check /Users/alex/Documents/Projects/Telnyx/server.js`
+- `node --check /Users/alex/Documents/Projects/Telnyx/public/app.js`
+- `node --check /Users/alex/Documents/Projects/Telnyx/public/marketing.js`
+- Local smoke boot:
+  - `GET /` -> `200`
+  - `GET /app` -> `200`
+  - `GET /api/health` -> `200` + JSON status
+  - `GET /uploads/test.pdf` -> `404`
+
+### Files Changed
+- `/Users/alex/Documents/Projects/Telnyx/server.js`
+- `/Users/alex/Documents/Projects/Telnyx/public/index.html`
+- `/Users/alex/Documents/Projects/Telnyx/public/marketing.css`
+- `/Users/alex/Documents/Projects/Telnyx/public/marketing.js`
+- `/Users/alex/Documents/Projects/Telnyx/public/app.html`
+- `/Users/alex/Documents/Projects/Telnyx/docs/USER-MANUAL.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/PRD-fax-app-enhancements.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/KNOWLEDGE-BASE.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/CHANGE-LOG.md`
+
+## 2026-03-09
+### Completed
+- Added split-host deployment support for Vercel marketing + Render API/app.
+- Added runtime marketing config file `/public/marketing.config.js` with `apiBaseUrl` and `appBaseUrl`.
+- Updated marketing JS to use configurable API/app base URLs for:
+  - signup POST
+  - Google signup start redirect
+  - post-signup login redirect
+  - all `Sign In` links on marketing page
+- Added CORS allowlist middleware for `/api/public/*` using `PUBLIC_SIGNUP_CORS_ORIGINS`.
+- Added optional public URL base env controls:
+  - `PUBLIC_APP_BASE_URL`
+  - `PUBLIC_MARKETING_BASE_URL`
+- Updated public signup responses/redirects to honor split-host app/marketing base URLs.
+- Added deployment runbook:
+  - `/Users/alex/Documents/Projects/Telnyx/docs/DEPLOY-VERCEL-MARKETING.md`
+- Updated `.env.example` and `README.md` with split-host setup variables and steps.
+- Updated continuity docs (`PRD`, `KNOWLEDGE-BASE`, `TASK-LIST`) for this session.
+
+### Validation
+- `node --check /Users/alex/Documents/Projects/Telnyx/server.js`
+- `node --check /Users/alex/Documents/Projects/Telnyx/public/app.js`
+- `node --check /Users/alex/Documents/Projects/Telnyx/public/marketing.js`
+- Local smoke checks:
+  - `GET /` -> `200`
+  - `OPTIONS /api/public/signup` with origin allowlist env -> `204` with CORS headers
+  - Marketing page includes `/marketing.config.js` script tag
+  - Vercel production deploy command succeeded for marketing project:
+    - `https://public-c86fzs4yu-alexander-bonakdars-projects.vercel.app`
+  - Current Vercel deployment protection returns `401` until project protection is disabled.
+
+### Files Changed
+- `/Users/alex/Documents/Projects/Telnyx/server.js`
+- `/Users/alex/Documents/Projects/Telnyx/public/index.html`
+- `/Users/alex/Documents/Projects/Telnyx/public/marketing.js`
+- `/Users/alex/Documents/Projects/Telnyx/public/marketing.config.js`
+- `/Users/alex/Documents/Projects/Telnyx/.env.example`
+- `/Users/alex/Documents/Projects/Telnyx/README.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/DEPLOY-VERCEL-MARKETING.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/PRD-fax-app-enhancements.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/KNOWLEDGE-BASE.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/TASK-LIST.md`
+- `/Users/alex/Documents/Projects/Telnyx/docs/CHANGE-LOG.md`
