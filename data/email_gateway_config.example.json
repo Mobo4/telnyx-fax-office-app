@@ -1,0 +1,20 @@
+{
+  "updated_at": "2026-03-16T00:00:00.000Z",
+  "tenants": {
+    "default": {
+      "tenant_id": "default",
+      "enabled": true,
+      "provider": "generic",
+      "gateway_address": "fax+default@example.com",
+      "enforce_allowlist": true,
+      "allowed_senders": [],
+      "allowed_domains": [],
+      "default_include_cover_page": true,
+      "notify_sender": true,
+      "inbound_notification_enabled": false,
+      "inbound_notification_recipients": [],
+      "webhook_token": "",
+      "updated_at": "2026-03-16T00:00:00.000Z"
+    }
+  }
+}

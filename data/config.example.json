@@ -1,0 +1,12 @@
+{
+  "updated_at": "2026-03-16T00:00:00.000Z",
+  "telnyx_api_key": "",
+  "telnyx_connection_id": "",
+  "telnyx_from_number": "",
+  "telnyx_fax_application_id": "",
+  "outbound_copy_enabled": true,
+  "outbound_copy_email": "fax@example.com",
+  "office_name": "Example Office",
+  "office_fax_number": "+17145550123",
+  "office_email": "office@example.com"
+}

@@ -50,6 +50,8 @@ Create a `.env` file from `.env.example`:
 cp .env.example .env
 ```
 
+Runtime app data in [`/Users/alex/Documents/Projects/Telnyx/data`](/Users/alex/Documents/Projects/Telnyx/data) is local state and is not committed. Safe starter shapes live beside it as `data/*.example.json`.
+
 Set:
 
 - `TELNYX_API_KEY`
